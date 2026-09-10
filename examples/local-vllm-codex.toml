@@ -1,0 +1,19 @@
+# Local vLLM server with the Codex CLI (vLLM speaks the OpenAI protocol).
+
+id = "local-vllm-codex"
+name = "Local vLLM"
+description = "Self-hosted vLLM deployment"
+cli = "codex"
+
+[provider]
+type = "vllm"
+base_url = "http://127.0.0.1:8000/v1"
+# Local servers usually need no key; some deployments require a
+# non-empty placeholder string.
+api_key = "local"
+
+[model]
+default = "Qwen3.8-27B"
+
+[codex]
+provider_name = "local-vllm-codex"

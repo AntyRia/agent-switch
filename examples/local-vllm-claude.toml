@@ -1,0 +1,23 @@
+# Local vLLM server with the Claude CLI (Anthropic protocol).
+
+id = "local-vllm-claude"
+name = "Local vLLM (Claude)"
+description = "Self-hosted vLLM deployment, Anthropic protocol"
+cli = "claude"
+
+[provider]
+type = "vllm"
+base_url = "http://127.0.0.1:8000"
+# Placeholder: vLLM ignores the key, but the Claude CLI needs a non-empty
+# token to skip its login check.
+api_key = "local"
+auth_mode = "auth_token"
+
+[model]
+default = "Qwen3.8-27B"
+# This build of the model rejects the CLI's default effort "high";
+# common accepted values on vLLM: xhigh / medium / low.
+effort = "xhigh"
+
+[codex]
+provider_name = "local-vllm-claude"
