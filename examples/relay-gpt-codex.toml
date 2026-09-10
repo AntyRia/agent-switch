@@ -1,0 +1,21 @@
+# GPT relay with the Codex CLI (OpenAI protocol).
+# Copy to your config root's profiles/ dir and fill in the key:
+#   ~/.agent-switch/profiles/relay-gpt-codex.toml   (Unix)
+#   %APPDATA%\agent-switch\profiles\relay-gpt-codex.toml  (Windows)
+
+id = "relay-gpt-codex"
+name = "GPT Relay"
+description = "Cloud relay, OpenAI protocol via Codex CLI"
+cli = "codex"
+
+[provider]
+type = "relay"
+# OpenAI-compatible root — usually ends in /v1
+base_url = "https://your-relay.example.com/v1"
+api_key = "sk-your-key-here"
+
+[model]
+default = "gpt-5.6"
+
+[codex]
+provider_name = "relay-gpt-codex"

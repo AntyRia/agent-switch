@@ -1,0 +1,16 @@
+# Rust build output
+target/
+
+# GUI
+desktop/node_modules/
+desktop/dist/
+desktop/src-tauri/target/
+
+# Local scratch (smoke tests, test sandboxes)
+.smoke-home/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp

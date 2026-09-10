@@ -1,0 +1,15 @@
+[package]
+name = "agent-switch-cli"
+version = "0.1.0"
+edition = "2021"
+
+# Spec uses `agent-switch` as the command name; keep the package name for
+# path dependencies, rename the built binary via an explicit bin target.
+[[bin]]
+name = "agent-switch"
+path = "src/main.rs"
+
+[dependencies]
+agent-switch-core = { path = "../agent-switch-core" }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

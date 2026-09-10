@@ -1,0 +1,24 @@
+# Claude relay with the Claude CLI (Anthropic protocol).
+
+id = "relay-claude"
+name = "Claude Relay"
+description = "Cloud relay, Anthropic protocol via Claude CLI"
+cli = "claude"
+
+[provider]
+type = "relay"
+# Anthropic convention: the server root, WITHOUT a trailing /v1
+base_url = "https://your-relay.example.com"
+api_key = "sk-your-key-here"
+# How the key is sent: "auth_token" (Authorization: Bearer, the relay
+# convention and the default) or "api_key" (x-api-key header).
+auth_mode = "auth_token"
+
+[model]
+default = "claude-sonnet-4-5"
+# Optional (Claude only): override the CLI's default reasoning effort.
+# Some relays / vLLM builds reject the CLI default — e.g.
+# effort = "xhigh"
+
+[codex]
+provider_name = "relay-claude"
