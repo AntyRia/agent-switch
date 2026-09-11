@@ -1,7 +1,8 @@
 [package]
 name = "agent-switch-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+repository = "https://github.com/AntyRia/agent-switch"
 
 # Spec uses `agent-switch` as the command name; keep the package name for
 # path dependencies, rename the built binary via an explicit bin target.
@@ -13,3 +14,4 @@ path = "src/main.rs"
 agent-switch-core = { path = "../agent-switch-core" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v4"] }
