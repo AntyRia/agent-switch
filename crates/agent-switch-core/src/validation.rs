@@ -32,13 +32,20 @@ pub fn validate_profile(p: &Profile) -> Vec<String> {
     if !cli.is_empty() && cli != "codex" && cli != "claude" {
         errors.push("cli must be \"codex\" or \"claude\"".to_string());
     }
-    // provider.type: relay/vllm plus the two legacy values (kept so old
-    // profiles stay valid; the GUI normalizes them on save).
+    // provider.type: the current values (relay / openai-compatible /
+    // official) plus the legacy ones (kept so old profiles stay valid; the
+    // store normalizes them on save).
     let pt = p.provider.provider_type.trim().to_ascii_lowercase();
     if pt.is_empty() {
         errors.push("provider.type must not be empty".to_string());
-    } else if !matches!(pt.as_str(), "relay" | "vllm" | "openai-compatible" | "openai") {
-        errors.push("provider.type must be \"relay\" or \"vllm\"".to_string());
+    } else if !matches!(
+        pt.as_str(),
+        "relay" | "vllm" | "openai-compatible" | "openai" | "official"
+    ) {
+        errors.push(
+            "provider.type must be \"relay\", \"openai-compatible\" or \"official\""
+                .to_string(),
+        );
     }
     // auth_mode (claude only): absent/empty or one of the two known values.
     if let Some(mode) = p.provider.auth_mode.as_deref() {
@@ -83,6 +90,8 @@ mod tests {
             model: ModelConfig {
                 default: "gpt-5.6".into(),
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: CodexConfig {
                 provider_name: "relay-a".into(),
@@ -153,8 +162,22 @@ mod tests {
     }
 
     #[test]
+    fn official_type_accepted() {
+        let mut p = profile();
+        p.provider.provider_type = "official".into();
+        // Official: the key is OPTIONAL (a subscription login counts as a
+        // credential), so a keyless official profile must validate clean.
+        p.provider.api_key = None;
+        assert!(
+            !validate_profile(&p).iter().any(|e| e.contains("provider.type")),
+            "official should be accepted"
+        );
+        assert!(validate_profile(&p).is_empty());
+    }
+
+    #[test]
     fn new_and_legacy_provider_types_accepted() {
-        for t in ["relay", "vllm", "openai-compatible", "openai"] {
+        for t in ["relay", "vllm", "openai-compatible", "openai", "official"] {
             let mut p = profile();
             p.provider.provider_type = t.into();
             assert!(

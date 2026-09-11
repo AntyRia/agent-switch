@@ -1,9 +1,11 @@
 [package]
 name = "agent-switch-core"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+repository = "https://github.com/AntyRia/agent-switch"
 
 [dependencies]
+chrono = { version = "0.4", features = ["clock"] }
 dirs = "5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -12,3 +14,13 @@ toml = "0.8"
 ureq = "2"
 uuid = { version = "1", features = ["v4"] }
 which = "6"
+
+# Process command-line scan for the session "open" detection
+# (sessions::open_session_ids). Windows-only: toolhelp snapshot + PEB reads.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+] }

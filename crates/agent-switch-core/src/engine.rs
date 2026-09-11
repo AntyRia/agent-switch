@@ -94,6 +94,8 @@ mod tests {
             model: ModelConfig {
                 default: "m".into(),
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: CodexConfig { provider_name: "t".into() },
             cli: cli.into(),

@@ -13,16 +13,36 @@ pub struct TestResult {
 /// uses the OpenAI-style `GET /models`, the claude engine uses a real
 /// 1-token Anthropic Messages request (an empty model is auto-detected
 /// from the provider's list first).
+///
+/// `official` marks the vendor-direct provider type: with no key there is
+/// nothing to call (the subscription login state is local to the isolated
+/// home) — instead of a misleading 401 the check reports that. With a key
+/// the official claude endpoint is probed with the vendor's `x-api-key`
+/// header (officials reject the relay's Bearer convention).
 pub fn test_engine(
     engine: Engine,
     base_url: &str,
     api_key: &str,
     model: &str,
     auth_mode: Option<&str>,
+    official: bool,
 ) -> Result<TestResult> {
+    if official && api_key.trim().is_empty() {
+        return Ok(TestResult {
+            ok: true,
+            status: 0,
+            model_count: None,
+            message: "no key set — a subscription login cannot be tested from here (run the login action once, then launch)".to_string(),
+        });
+    }
     match engine {
         Engine::Codex => test_connection(base_url, api_key),
-        Engine::Claude => test_anthropic(base_url, api_key, model, auth_mode),
+        Engine::Claude => test_anthropic(
+            base_url,
+            api_key,
+            model,
+            if official { Some("api_key") } else { auth_mode },
+        ),
     }
 }
 

@@ -3,10 +3,12 @@ use std::path::{Path, PathBuf};
 use crate::claude::find_claude;
 use crate::codex::{find_codex, needs_cmd_wrap};
 use crate::engine::Engine;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::profile::Profile;
 use crate::profile_store::ProfileStore;
 use crate::runtime::{create_runtime, Runtime};
+use crate::settings::Settings;
+use crate::terminal;
 
 /// Resolve the API key for a profile. Precedence (spec §9):
 /// 1. the environment variable named by `api_key_env` (when set, non-empty)
@@ -76,18 +78,78 @@ pub fn sanitized_child_env() -> Vec<(String, String)> {
         .collect()
 }
 
+/// The global proxy setting (settings.toml) as env pairs for a launched
+/// CLI. Empty when no proxy is configured (direct connection).
+///
+/// All-case spellings are set so both old-style and new-style HTTP stacks
+/// see it, and `NO_PROXY` keeps `localhost`/`127.0.0.1` on the direct path
+/// so a local vLLM / SGLang endpoint keeps working while the proxy is on.
+pub fn proxy_env_pairs(settings: &Settings) -> Vec<(String, String)> {
+    let Some(url) = settings.proxy_url() else {
+        return Vec::new();
+    };
+    const LOOPBACK: &str = "localhost,127.0.0.1";
+    vec![
+        ("HTTP_PROXY".into(), url.clone()),
+        ("HTTPS_PROXY".into(), url.clone()),
+        ("ALL_PROXY".into(), url.clone()),
+        ("http_proxy".into(), url.clone()),
+        ("https_proxy".into(), url.clone()),
+        ("all_proxy".into(), url.clone()),
+        ("NO_PROXY".into(), LOOPBACK.into()),
+        ("no_proxy".into(), LOOPBACK.into()),
+    ]
+}
+
+/// The CLI bypass-mode flag plus any caller-provided extra args, in launch
+/// order (the flag comes first so it is always applied).
+///
+/// The flag is added only when the caller did not already supply it: both
+/// CLIs abort at argument parsing with `the argument … cannot be used
+/// multiple times`, and the flag can reach the command line twice — the
+/// launcher appends it (dangerous mode) AND the user's own shell
+/// alias/function already carries it.
+fn launch_args(settings: &Settings, engine: Engine, extra_args: &[String]) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(flag) = settings.dangerous_flag(engine) {
+        if !extra_args.iter().any(|a| a == flag) {
+            args.push(flag.to_string());
+        }
+    }
+    args.extend(extra_args.iter().cloned());
+    args
+}
+
+/// The environment variable that carries the profile's key at launch.
+/// Official profiles always use the vendor's own convention
+/// (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`) regardless of `auth_mode`;
+/// everything else follows the engine + auth_mode rules.
+pub fn key_env_for(profile: &Profile) -> String {
+    if profile.is_official() {
+        return match profile.engine() {
+            Engine::Codex => "OPENAI_API_KEY".to_string(),
+            Engine::Claude => "ANTHROPIC_API_KEY".to_string(),
+        };
+    }
+    profile
+        .engine()
+        .key_env(profile.provider.auth_mode.as_deref())
+        .to_string()
+}
+
 /// Run the profile's CLI in the caller's terminal with an isolated config
 /// home and a per-process API key. Waits for the CLI and returns its exit
 /// code.
 pub fn run_profile(
     store: &ProfileStore,
     profile: &Profile,
+    settings: &Settings,
     workspace: &Path,
     extra_args: &[String],
 ) -> Result<i32> {
-    let runtime = create_runtime(store, profile)?;
+    let runtime = create_runtime(store, profile, workspace)?;
     let key = resolve_api_key(profile)?;
-    launch_in_runtime(&runtime, profile, key, workspace, extra_args)
+    launch_in_runtime(&runtime, profile, settings, key, workspace, extra_args)
 }
 
 /// Spawn the profile's CLI against an already-created isolated runtime,
@@ -96,6 +158,7 @@ pub fn run_profile(
 pub fn launch_in_runtime(
     runtime: &Runtime,
     profile: &Profile,
+    settings: &Settings,
     api_key: String,
     workspace: &Path,
     extra_args: &[String],
@@ -127,23 +190,37 @@ pub fn launch_in_runtime(
     cmd.envs(sanitized_child_env());
     cmd.current_dir(workspace)
         .env(runtime.engine.home_env(), &runtime.home);
+    // Official profiles WITHOUT a key run on the logged-in subscription
+    // account (credentials in the isolated home). An empty key env var
+    // must NOT be set in that case — it would put the CLI into API-key
+    // mode with no key and shadow the login state.
+    let inject_key = !(profile.is_official() && api_key.is_empty());
     match engine {
         Engine::Codex => {
-            cmd.env("OPENAI_API_KEY", api_key);
+            if inject_key {
+                cmd.env("OPENAI_API_KEY", api_key);
+            }
+            cmd.env("RUST_BACKTRACE", "1");
         }
         // Anthropic protocol: base URL + model travel as env vars (the
         // isolated .claude dir holds no config at all). The small/fast
         // model is pinned to the same model so relays without a haiku do
-        // not break background requests.
+        // not break background requests. Official profiles get NO
+        // ANTHROPIC_BASE_URL: the CLI's built-in official endpoint is
+        // exactly the point of the type.
         Engine::Claude => {
-            cmd.env("ANTHROPIC_BASE_URL", &profile.provider.base_url)
-                .env("ANTHROPIC_MODEL", &profile.model.default)
+            if !profile.is_official() {
+                cmd.env("ANTHROPIC_BASE_URL", &profile.provider.base_url);
+            }
+            cmd.env("ANTHROPIC_MODEL", &profile.model.default)
                 .env("ANTHROPIC_SMALL_FAST_MODEL", &profile.model.default)
-                .env(engine.key_env(profile.provider.auth_mode.as_deref()), api_key)
                 // Belt-and-braces: force transcript persistence even if a
                 // nested-session marker slips through (requires Claude
                 // Code >= 2.1.172).
                 .env("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1");
+            if inject_key {
+                cmd.env(key_env_for(profile).as_str(), api_key.as_str());
+            }
             // Optional per-profile reasoning effort (see ModelConfig.effort).
             if let Some(effort) = profile
                 .model
@@ -155,9 +232,18 @@ pub fn launch_in_runtime(
             }
         }
     }
-    for arg in extra_args {
+    for (k, v) in proxy_env_pairs(settings) {
+        cmd.env(k, v);
+    }
+    for arg in launch_args(settings, engine, extra_args) {
         cmd.arg(arg);
     }
+    crate::logging::info(&format!(
+        "launched {} '{}' in workspace {}",
+        runtime.engine.binary(),
+        profile.id,
+        workspace.display()
+    ));
     let status = cmd.status()?;
     Ok(status.code().unwrap_or(1))
 }
@@ -178,17 +264,27 @@ pub struct TerminalLaunch {
 /// these — it is injected per process at launch, spec §9).
 fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, String)> {
     match runtime.engine {
-        Engine::Codex => vec![(Engine::Codex.home_env(), runtime.home.to_string_lossy().into_owned())],
+        Engine::Codex => vec![
+            (Engine::Codex.home_env(), runtime.home.to_string_lossy().into_owned()),
+            // A Codex panic exits 101 with the backtrace on stderr; without
+            // this the backtrace is one frame deep and hard to act on. The
+            // terminal window stays open (-NoExit), so it is readable.
+            ("RUST_BACKTRACE", "1".to_string()),
+        ],
         Engine::Claude => {
-            let mut v = vec![
-                (
-                    Engine::Claude.home_env(),
-                    runtime.home.to_string_lossy().into_owned(),
-                ),
-                (
+            let mut v = vec![(
+                Engine::Claude.home_env(),
+                runtime.home.to_string_lossy().into_owned(),
+            )];
+            // Official profiles keep the CLI's built-in official endpoint:
+            // no ANTHROPIC_BASE_URL override.
+            if !profile.is_official() {
+                v.push((
                     "ANTHROPIC_BASE_URL",
                     profile.provider.base_url.clone(),
-                ),
+                ));
+            }
+            v.extend([
                 ("ANTHROPIC_MODEL", profile.model.default.clone()),
                 (
                     "ANTHROPIC_SMALL_FAST_MODEL",
@@ -197,7 +293,7 @@ fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, St
                 // Forces transcript persistence even if the terminal the
                 // user launches from still carries nested-session markers.
                 ("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1".to_string()),
-            ];
+            ]);
             if let Some(effort) = profile
                 .model
                 .effort
@@ -212,13 +308,21 @@ fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, St
 }
 
 /// Create the isolated runtime plus a start script a system terminal can run.
+///
+/// `script_stem` names the generated script (`<stem>.ps1` / `<stem>.sh` in
+/// the runtime dir). Fresh launches use `start`; session resumes use
+/// `resume-<session-id>` — putting the session id in the script file name
+/// keeps it visible in the launched process tree, which is what the
+/// "already open" detection greps for (sessions::open_session_ids).
 pub fn prepare_terminal_launch(
     store: &ProfileStore,
     profile: &Profile,
+    settings: &Settings,
     workspace: &Path,
     extra_args: &[String],
+    script_stem: &str,
 ) -> Result<TerminalLaunch> {
-    let runtime = create_runtime(store, profile)?;
+    let runtime = create_runtime(store, profile, workspace)?;
     if matches!(runtime.engine, Engine::Claude) {
         // Best effort: pre-seed the isolated home so the first launch
         // skips onboarding (theme picker, per-project trust dialog).
@@ -232,181 +336,226 @@ pub fn prepare_terminal_launch(
         .unwrap_or_default();
 
     let env = non_secret_env(&runtime, profile);
-    let binary = runtime.engine.binary();
-    let args: Vec<String> = if cfg!(windows) {
-        extra_args
-            .iter()
-            .map(|a| format!("'{}'", ps_quote(a)))
-            .collect()
+    let all_args = launch_args(settings, runtime.engine, extra_args);
+    // The API key is injected into the terminal process by
+    // open_in_system_terminal at launch; it must never be written to the
+    // script file (spec §9).
+    let script_path = write_start_script(
+        &runtime.dir,
+        script_stem,
+        &env,
+        runtime.engine,
+        &all_args,
+        workspace,
+    )?;
+
+    // Secret/injected env pairs: the API key first, then the global proxy
+    // pairs (also injected at open time — they travel the same way so a
+    // pinned terminal that does not pass env through still gets them).
+    // Official profiles without a key inject NO key var at all — the
+    // logged-in subscription account in the isolated home is the
+    // credential, and an empty key var would shadow it (API-key mode with
+    // no key).
+    let mut launch_env: Vec<(String, String)> = Vec::new();
+    if !(profile.is_official() && key.is_empty()) {
+        launch_env.push((key_env_for(profile), key));
+    }
+    launch_env.extend(proxy_env_pairs(settings));
+    crate::logging::info(&format!(
+        "prepared terminal launch for profile '{}' (script {})",
+        profile.id,
+        script_path.display()
+    ));
+    Ok(TerminalLaunch {
+        runtime_id,
+        script_path,
+        runtime,
+        env: launch_env,
+    })
+}
+
+/// Write the platform start script (`<stem>.ps1` / `<stem>.sh`) into
+/// `dir`: the (non-secret) env assignments, a change into `workspace`, and
+/// the CLI command line.
+///
+/// The binary is invoked by its FULL resolved path (quoted), not the bare
+/// name: a bare `codex`/`claude` goes through the user's shell
+/// aliases/functions first — e.g. a PowerShell profile wrapper that
+/// already appends a bypass flag — which duplicates the argument and
+/// makes the CLI abort (`… cannot be used multiple times`). A quoted full
+/// path skips name resolution entirely. If the binary cannot be resolved
+/// (should not happen: the GUI checks status first, the CLI pre-checks)
+/// the bare name is used so the launch still fails with the usual
+/// "command not found" at run time.
+fn write_start_script(
+    dir: &Path,
+    stem: &str,
+    env: &[(&'static str, String)],
+    engine: Engine,
+    args: &[String],
+    workspace: &Path,
+) -> Result<PathBuf> {
+    let quoted_args: Vec<String> = if cfg!(windows) {
+        args.iter().map(|a| format!("'{}'", ps_quote(a))).collect()
     } else {
-        extra_args
-            .iter()
-            .map(|a| format!("'{}'", sh_quote(a)))
-            .collect()
+        args.iter().map(|a| format!("'{}'", sh_quote(a))).collect()
     };
-    let arg_suffix = if args.is_empty() {
+    let arg_suffix = if quoted_args.is_empty() {
         String::new()
     } else {
-        format!(" {}", args.join(" "))
+        format!(" {}", quoted_args.join(" "))
+    };
+    let bin = match find_engine_binary(engine) {
+        Ok(p) => p.to_string_lossy().into_owned(),
+        Err(_) => engine.binary().to_string(),
     };
 
-    let script_path = if cfg!(windows) {
+    if cfg!(windows) {
         let mut s = String::new();
-        for (k, v) in &env {
-            s.push_str(&format!("$env:{k} = '{}'\n", ps_quote(&v)));
+        for (k, v) in env {
+            s.push_str(&format!("$env:{k} = '{}'\n", ps_quote(v)));
         }
-        // The API key is injected into the terminal process by
-        // open_in_system_terminal at launch; it must never be written to
-        // this file (spec §9).
         s.push_str(&format!(
             "Set-Location -LiteralPath '{}'\n",
             ps_quote(workspace.to_string_lossy().as_ref())
         ));
-        s.push_str(&format!("{binary}{arg_suffix}\n"));
-        let path = runtime.dir.join("start.ps1");
+        // `&` (call operator) is required for a quoted command path.
+        s.push_str(&format!("& '{}'{}\n", ps_quote(&bin), arg_suffix));
+        let path = dir.join(format!("{stem}.ps1"));
         std::fs::write(&path, s)?;
-        path
+        Ok(path)
     } else {
         let mut s = String::new();
-        for (k, v) in &env {
-            s.push_str(&format!("export {k}='{}'\n", sh_quote(&v)));
+        for (k, v) in env {
+            s.push_str(&format!("export {k}='{}'\n", sh_quote(v)));
         }
-        // The API key is exported by the terminal launch command itself;
-        // it must never be written to this file (spec §9).
         s.push_str(&format!(
             "cd '{}' || exit 1\n",
             sh_quote(workspace.to_string_lossy().as_ref())
         ));
-        s.push_str(&format!("exec {binary}{arg_suffix}\n"));
-        let path = runtime.dir.join("start.sh");
+        s.push_str(&format!("exec '{}'{}\n", sh_quote(&bin), arg_suffix));
+        let path = dir.join(format!("{stem}.sh"));
         std::fs::write(&path, s)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
         }
-        path
-    };
+        Ok(path)
+    }
+}
 
+/// The CLI arguments that drive the official-account login flow. Codex has
+/// a dedicated subcommand (`codex login`, which itself offers browser
+/// OAuth, `--with-api-key` and `--device-auth`); Claude Code started in a
+/// FRESH isolated home (no `.credentials.json` yet) opens its own login
+/// screen on start, so it needs no argument at all.
+pub fn login_args(engine: Engine) -> Vec<String> {
+    match engine {
+        Engine::Codex => vec!["login".to_string()],
+        Engine::Claude => Vec::new(),
+    }
+}
+
+/// Run the official-account login flow in the caller's own terminal (the
+/// CLI `login` command): isolated home, NO provider vars at all (a login
+/// must hit the official endpoint with a clean environment), stdio
+/// inherited so the interactive browser flow stays visible. Waits for the
+/// CLI and returns its exit code.
+pub fn login_in_runtime(
+    runtime: &Runtime,
+    profile: &Profile,
+    workspace: &Path,
+) -> Result<i32> {
+    let engine = runtime.engine;
+    if matches!(engine, Engine::Claude) {
+        // Best effort: pre-seed so only the login screen appears.
+        let _ = crate::runtime::seed_claude_home(&runtime.home, None);
+    }
+    let bin = find_engine_binary(engine)?;
+    let (program, initial) = if needs_cmd_wrap(&bin) {
+        (
+            "cmd.exe".to_string(),
+            vec!["/C".to_string(), bin.to_string_lossy().into_owned()],
+        )
+    } else {
+        (bin.to_string_lossy().into_owned(), Vec::new())
+    };
+    let mut cmd = std::process::Command::new(&program);
+    for arg in initial {
+        cmd.arg(arg);
+    }
+    cmd.env_clear();
+    cmd.envs(sanitized_child_env());
+    cmd.current_dir(workspace).env(engine.home_env(), &runtime.home);
+    for arg in login_args(engine) {
+        cmd.arg(arg);
+    }
+    crate::logging::info(&format!(
+        "login flow for '{}' (home {})",
+        profile.id,
+        runtime.home.display()
+    ));
+    let status = cmd.status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Prepare a terminal launch for the official-account login flow (the GUI
+/// login button): a start script carrying ONLY the isolated-home env — no
+/// provider vars, no key — running `codex login` / `claude`. Returns a
+/// `TerminalLaunch` with an EMPTY secret list (there is nothing secret to
+/// inject for a login).
+pub fn prepare_login(
+    store: &ProfileStore,
+    profile: &Profile,
+    workspace: &Path,
+) -> Result<TerminalLaunch> {
+    let runtime = create_runtime(store, profile, workspace)?;
+    let runtime_id = runtime
+        .dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let env: Vec<(&'static str, String)> = vec![(
+        runtime.engine.home_env(),
+        runtime.home.to_string_lossy().into_owned(),
+    )];
+    let script_path = write_start_script(
+        &runtime.dir,
+        "login",
+        &env,
+        runtime.engine,
+        &login_args(runtime.engine),
+        workspace,
+    )?;
+    crate::logging::info(&format!(
+        "prepared login for profile '{}' (script {})",
+        profile.id,
+        script_path.display()
+    ));
     Ok(TerminalLaunch {
         runtime_id,
         script_path,
         runtime,
-        env: vec![(
-            profile
-                .engine()
-                .key_env(profile.provider.auth_mode.as_deref())
-                .to_string(),
-            key,
-        )],
+        env: Vec::new(),
     })
 }
 
-/// Open the start script in the user's system terminal. The secret env
-/// pairs (name, value) are injected into the terminal process (env or
+/// Open the start script in the user's terminal (see `terminal` for the
+/// per-OS recipes and the auto-detect / pinned-terminal logic). The secret
+/// env pairs (name, value) are injected into the terminal process (env or
 /// launch command) so they never land in the start script on disk
 /// (spec §9).
+///
+/// `terminal_override` is the user's pinned terminal path ("" = auto-detect
+/// the first available terminal).
 pub fn open_in_system_terminal(
     script: &Path,
     workspace: &Path,
     env: &[(String, String)],
-) -> Result<()> {
-    if cfg!(windows) {
-        // wt / cmd.exe pass their own environment through to the spawned
-        // shell — and this process's environment may carry Claude Code
-        // nested-session markers (GUI started from inside a Claude Code
-        // session). Rebuild it: sanitized parent env + the launch pairs.
-        fn launch_env(env: &[(String, String)]) -> Vec<(String, String)> {
-            let mut pairs = sanitized_child_env();
-            pairs.extend(env.iter().cloned());
-            pairs
-        }
-        let ws = workspace.to_string_lossy().into_owned();
-        if which::which("wt").is_ok() {
-            let mut cmd = std::process::Command::new("wt");
-            cmd.arg("-d").arg(ws);
-            cmd.env_clear();
-            cmd.envs(launch_env(env));
-            cmd.arg("powershell")
-                .arg("-NoExit")
-                .arg("-ExecutionPolicy")
-                .arg("Bypass")
-                .arg("-File")
-                .arg(script);
-            cmd.spawn()
-                .map_err(|e| Error::Other(format!("failed to open Windows Terminal: {e}")))?;
-        } else {
-            let mut cmd = std::process::Command::new("cmd.exe");
-            cmd.arg("/C").arg("start").arg("");
-            cmd.env_clear();
-            cmd.envs(launch_env(env));
-            cmd.arg("powershell")
-                .arg("-NoExit")
-                .arg("-ExecutionPolicy")
-                .arg("Bypass")
-                .arg("-File")
-                .arg(script);
-            cmd.spawn()
-                .map_err(|e| Error::Other(format!("failed to open a terminal: {e}")))?;
-        }
-        Ok(())
-    } else if cfg!(target_os = "macos") {
-        // `open -a Terminal` does not pass the caller's environment through,
-        // so run the script via Terminal's AppleScript with the secrets
-        // exported inline (in-memory only, never written to the script file).
-        let payload = format!(
-            "{}; source '{}'",
-            sh_env_exports(env),
-            sh_quote(script.to_string_lossy().as_ref())
-        );
-        std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(format!(
-                "tell application \"Terminal\" to do script \"{}\"",
-                applescript_quote(&payload)
-            ))
-            .spawn()
-            .map_err(|e| Error::Other(format!("failed to open Terminal: {e}")))?;
-        Ok(())
-    } else {
-        for (term, use_dash_dash) in [
-            ("x-terminal-emulator", false),
-            ("gnome-terminal", true),
-            ("konsole", false),
-            ("xterm", false),
-        ] {
-            if which::which(term).is_ok() {
-                let mut cmd = std::process::Command::new(term);
-                if use_dash_dash {
-                    cmd.arg("--");
-                }
-                // Terminal emulators do not inherit the caller's environment,
-                // so the secrets are exported inline in the launch command.
-                cmd.arg("sh")
-                    .arg("-c")
-                    .arg(format!(
-                        "{}; exec '{}'",
-                        sh_env_exports(env),
-                        sh_quote(script.to_string_lossy().as_ref())
-                    ));
-                cmd.spawn()
-                    .map_err(|e| Error::Other(format!("failed to open {term}: {e}")))?;
-                return Ok(());
-            }
-        }
-        Err(Error::Other(format!(
-            "no terminal emulator found; run this script manually: {}",
-            script.display()
-        )))
-    }
-}
-
-/// Shell `export K='V'` statements joined with "; " (one line).
-fn sh_env_exports(env: &[(String, String)]) -> String {
-    env.iter()
-        .map(|(k, v)| format!("export {k}='{}'", sh_quote(v)))
-        .collect::<Vec<_>>()
-        .join("; ")
+    terminal_override: &str,
+) -> Result<terminal::TerminalOutcome> {
+    terminal::open_in_terminal(script, workspace, env, terminal_override)
 }
 
 /// PowerShell single-quote escaping: double the quote.
@@ -417,20 +566,6 @@ fn ps_quote(s: &str) -> String {
 /// Shell single-quote escaping: `'` -> `'\''`.
 fn sh_quote(s: &str) -> String {
     s.replace('\'', "'\\''")
-}
-
-/// Escape a string for inclusion in an AppleScript string literal.
-#[allow(dead_code)]
-fn applescript_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            _ => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -470,6 +605,8 @@ mod tests {
                     "gpt-5.6".into()
                 },
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: CodexConfig {
                 provider_name: "t".into(),
@@ -519,7 +656,8 @@ mod tests {
         ));
         let store = ProfileStore { root: dir.clone() };
         let p = profile("codex", Some("sk-script-secret".into()), None, None);
-        let launch = prepare_terminal_launch(&store, &p, &dir, &[]).unwrap();
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(!content.contains("sk-script-secret"));
         // The key is still available in-process for terminal injection.
@@ -544,7 +682,8 @@ mod tests {
             None,
             Some("auth_token".into()),
         );
-        let launch = prepare_terminal_launch(&store, &p, &dir, &[]).unwrap();
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         // Non-secret runtime env is written to the script (both ps1 and sh
         // spell the variable names the same way).
@@ -579,11 +718,13 @@ mod tests {
         let launch = prepare_terminal_launch(
             &store,
             &p,
+            &Settings::default(),
             &dir,
             &[
                 "--resume".to_string(),
                 "aaaa1111-2222-3333-4444-555566667777".to_string(),
             ],
+            "start",
         )
         .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
@@ -595,11 +736,13 @@ mod tests {
         let launch = prepare_terminal_launch(
             &store,
             &pc,
+            &Settings::default(),
             &dir,
             &[
                 "resume".to_string(),
                 "bbbb2222-3333-4444-5555-666677778888".to_string(),
             ],
+            "start",
         )
         .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
@@ -662,7 +805,8 @@ mod tests {
         ));
         let store = ProfileStore { root: dir.clone() };
         let p = profile("claude", Some("sk-force".into()), None, None);
-        let launch = prepare_terminal_launch(&store, &p, &dir, &[]).unwrap();
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(content.contains("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"));
         assert!(content.contains("= '1'") || content.contains("=1"));
@@ -683,11 +827,202 @@ mod tests {
             None,
             Some("api_key".into()),
         );
-        let launch = prepare_terminal_launch(&store, &p, &dir, &[]).unwrap();
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
         assert_eq!(
             launch.env,
             vec![("ANTHROPIC_API_KEY".to_string(), "sk-claude-2".to_string())]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn proxy_env_pairs_follow_the_settings() {
+        assert!(proxy_env_pairs(&Settings::default()).is_empty());
+        let mut s = Settings::default();
+        s.proxy_host = "10.0.0.1".into();
+        s.proxy_port = 8080;
+        let pairs = proxy_env_pairs(&s);
+        let flat = pairs
+            .iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(flat.contains("HTTP_PROXY=http://10.0.0.1:8080"));
+        assert!(flat.contains("ALL_PROXY=http://10.0.0.1:8080"));
+        assert!(flat.contains("all_proxy=http://10.0.0.1:8080"));
+        // Loopback stays direct so a local vLLM keeps working.
+        assert!(flat.contains("NO_PROXY=localhost,127.0.0.1"));
+        assert!(flat.contains("no_proxy=localhost,127.0.0.1"));
+    }
+
+    #[test]
+    fn settings_lands_in_terminal_launch() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-script-settings-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let mut s = Settings::default();
+        s.dangerous_mode = true;
+        s.proxy_host = "127.0.0.1".into();
+        s.proxy_port = 7897;
+        let p = profile("codex", Some("sk-settings-secret".into()), None, None);
+        let launch =
+            prepare_terminal_launch(&store, &p, &s, &dir, &[], "start").unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        // The bypass flag is baked into the generated script...
+        assert!(content.contains("--dangerously-bypass-approvals-and-sandbox"));
+        // ...while the proxy pairs travel in the in-process env vec,
+        // never into the script file.
+        let has = |kv: &[(String, String)], k: &str| {
+            kv.iter().any(|(kk, _)| kk == k)
+        };
+        assert!(has(&launch.env, "OPENAI_API_KEY"));
+        assert!(has(&launch.env, "HTTP_PROXY"));
+        assert!(has(&launch.env, "NO_PROXY"));
+        assert!(!content.contains("sk-settings-secret"));
+        assert!(!content.contains("HTTP_PROXY"));
+        // Default settings: no flag, no proxy.
+        let launch = prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start2")
+            .unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert!(!content.contains("--dangerously"));
+        assert_eq!(launch.env.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dangerous_flag_is_never_duplicated() {
+        // The bypass flag can reach the command line twice: the launcher
+        // appends it (dangerous mode) AND the caller's own args already
+        // carry it (a user shell alias/function wrapper, or
+        // `agent-switch run <id> -- <flag>`). Both CLIs abort at argument
+        // parsing with "cannot be used multiple times" — so it must be
+        // deduplicated.
+        let dir = std::env::temp_dir().join(format!(
+            "as-flag-dup-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let mut s = Settings::default();
+        s.dangerous_mode = true;
+        // codex: caller already passed the flag → exactly one occurrence.
+        let flag = "--dangerously-bypass-approvals-and-sandbox".to_string();
+        let p = profile("codex", Some("sk-dup".into()), None, None);
+        let launch =
+            prepare_terminal_launch(&store, &p, &s, &dir, &[flag.clone()], "start").unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert_eq!(
+            content.matches(&flag).count(),
+            1,
+            "flag duplicated in script:\n{content}"
+        );
+        // No caller args → the launcher adds it, still exactly once.
+        let launch =
+            prepare_terminal_launch(&store, &p, &s, &dir, &[], "start2").unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert_eq!(content.matches(&flag).count(), 1);
+        // claude flag, same rule.
+        let p = profile("claude", Some("sk-dup2".into()), None, None);
+        let cflag = "--dangerously-skip-permissions".to_string();
+        let launch =
+            prepare_terminal_launch(&store, &p, &s, &dir, &[cflag.clone()], "start3").unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert_eq!(content.matches(&cflag).count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn official_claude_launch_skips_base_url_and_key_when_keyless() {
+        // Official profile WITHOUT a key: no ANTHROPIC_BASE_URL (the CLI's
+        // built-in official endpoint is the point) and NO key env pair —
+        // the subscription login stored in the isolated home is the
+        // credential; an empty key var would shadow it (API-key mode with
+        // no key).
+        let dir = std::env::temp_dir().join(format!(
+            "as-official-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let mut p = profile("claude", None, None, None);
+        p.provider.provider_type = "official".into();
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert!(content.contains("CLAUDE_CONFIG_DIR"));
+        assert!(!content.contains("ANTHROPIC_BASE_URL"));
+        assert!(content.contains("ANTHROPIC_MODEL"));
+        assert!(launch.env.is_empty(), "no key pair for keyless official");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn official_profiles_use_the_vendor_key_env() {
+        // claude official + key → ANTHROPIC_API_KEY (the vendor convention,
+        // never the relay's auth-token variable — regardless of auth_mode).
+        let dir = std::env::temp_dir().join(format!(
+            "as-official-key-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let mut p = profile(
+            "claude",
+            Some("sk-official".into()),
+            None,
+            Some("auth_token".into()),
+        );
+        p.provider.provider_type = "official".into();
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+        assert_eq!(
+            launch.env,
+            vec![("ANTHROPIC_API_KEY".to_string(), "sk-official".to_string())]
+        );
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert!(!content.contains("ANTHROPIC_BASE_URL"));
+        // codex official + key → OPENAI_API_KEY.
+        let mut pc = profile("codex", Some("sk-official".into()), None, None);
+        pc.provider.provider_type = "official".into();
+        let launch =
+            prepare_terminal_launch(&store, &pc, &Settings::default(), &dir, &[], "start2").unwrap();
+        assert_eq!(
+            launch.env,
+            vec![("OPENAI_API_KEY".to_string(), "sk-official".to_string())]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prepare_login_script_carries_only_the_isolated_home() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-login-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let mut p = profile("claude", None, None, None);
+        p.provider.provider_type = "official".into();
+        let launch = prepare_login(&store, &p, &dir).unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        // Only the isolated-home env: no provider vars, no key, no flag —
+        // a login must hit the official endpoint with a clean environment.
+        assert!(content.contains("CLAUDE_CONFIG_DIR"));
+        assert!(!content.contains("ANTHROPIC_BASE_URL"));
+        assert!(!content.contains("ANTHROPIC_MODEL"));
+        assert!(!content.contains("--dangerously"));
+        // Nothing secret to inject for a login.
+        assert!(launch.env.is_empty());
+        // codex login runs the `login` subcommand.
+        let pc = profile("codex", None, None, None);
+        let launch = prepare_login(&store, &pc, &dir).unwrap();
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert!(content.contains("login"));
+        assert!(!content.contains("OPENAI_API_KEY"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
