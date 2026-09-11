@@ -25,10 +25,16 @@ pub struct Runtime {
 
 /// Get (creating if needed) the profile's persistent isolated home. Codex's
 /// generated `config.toml` is rewritten from the profile on every call so
-/// the profile stays the single source of routing truth; Claude needs no
-/// config file — its base URL, model and key travel as per-process
-/// environment variables at launch (spec §9).
-pub fn create_runtime(store: &ProfileStore, profile: &Profile) -> Result<Runtime> {
+/// the profile stays the single source of routing truth; the `[projects]`
+/// trust table Codex writes into that file is carried over (and the launch
+/// `workspace` is marked trusted — see `codex::with_project_trust`).
+/// Claude needs no config file — its base URL, model and key travel as
+/// per-process environment variables at launch (spec §9).
+pub fn create_runtime(
+    store: &ProfileStore,
+    profile: &Profile,
+    workspace: &Path,
+) -> Result<Runtime> {
     let engine = profile.engine();
     let runtime_dir = store.runtime_dir();
     fs::create_dir_all(&runtime_dir)?;
@@ -36,8 +42,16 @@ pub fn create_runtime(store: &ProfileStore, profile: &Profile) -> Result<Runtime
     let home = dir.join(engine.home_dir_name());
     fs::create_dir_all(&home)?;
     if matches!(engine, Engine::Codex) {
-        let config = crate::codex::generate_codex_config(profile);
-        fs::write(home.join("config.toml"), config)?;
+        // The model catalog gives the profile model real metadata (context
+        // window, no reasoning params) and replaces the built-in OpenAI
+        // model list — see codex::render_model_catalog.
+        let catalog_path = home.join("model-catalog.json");
+        let config_path = home.join("config.toml");
+        let existing = fs::read_to_string(&config_path).ok();
+        let config = crate::codex::generate_codex_config(profile, &catalog_path);
+        let config = crate::codex::with_project_trust(config, existing.as_deref(), workspace);
+        fs::write(&config_path, config)?;
+        fs::write(&catalog_path, crate::codex::render_model_catalog(profile))?;
     } else {
         // Base pre-seed (theme + onboarding); the launch paths re-seed with
         // the workspace for the per-project trust entry. Best effort: a
@@ -250,6 +264,8 @@ mod tests {
             model: crate::profile::ModelConfig {
                 default: "m".into(),
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: crate::profile::CodexConfig {
                 provider_name: "keepme".into(),
@@ -395,13 +411,15 @@ mod tests {
             model: crate::profile::ModelConfig {
                 default: "m".into(),
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: crate::profile::CodexConfig {
                 provider_name: "t".into(),
             },
             cli: String::new(), // legacy shape → codex
         };
-        let rt = create_runtime(&store, &profile).unwrap();
+        let rt = create_runtime(&store, &profile, std::path::Path::new(".")).unwrap();
         assert!(matches!(rt.engine, Engine::Codex));
         let config_path = rt.home.join("config.toml");
         assert!(config_path.exists());
@@ -433,13 +451,15 @@ mod tests {
             model: crate::profile::ModelConfig {
                 default: "claude-sonnet-4-5".into(),
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: crate::profile::CodexConfig {
                 provider_name: "c".into(),
             },
             cli: "claude".into(),
         };
-        let rt = create_runtime(&store, &profile).unwrap();
+        let rt = create_runtime(&store, &profile, std::path::Path::new(".")).unwrap();
         assert!(matches!(rt.engine, Engine::Claude));
         assert!(rt.home.ends_with(".claude"));
         assert!(rt.home.is_dir());

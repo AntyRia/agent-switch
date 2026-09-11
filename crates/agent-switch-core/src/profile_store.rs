@@ -36,15 +36,11 @@ impl ProfileStore {
         }
     }
 
-    /// Create the directory layout (idempotent): profiles/, runtime/ and the
-    /// spec's root settings.toml placeholder.
+    /// Create the directory layout (idempotent): profiles/ and runtime/.
+    /// (settings.toml is created on demand by the settings module.)
     pub fn init(&self) -> Result<()> {
         fs::create_dir_all(self.profiles_dir())?;
         fs::create_dir_all(self.runtime_dir())?;
-        let settings = self.root.join("settings.toml");
-        if !settings.exists() {
-            fs::write(&settings, "# agent-switch settings (reserved; no settings are read yet)\n")?;
-        }
         Ok(())
     }
 
@@ -78,7 +74,10 @@ impl ProfileStore {
                 .ok()
                 .and_then(|s| toml::from_str::<Profile>(&s).ok())
             {
-                Some(p) => profiles.push(p),
+                Some(mut p) => {
+                    p.provider.normalize_provider_type();
+                    profiles.push(p)
+                }
                 None => eprintln!(
                     "warning: skipping unparseable profile file: {}",
                     path.display()
@@ -95,14 +94,20 @@ impl ProfileStore {
             return Err(Error::ProfileNotFound(id.to_string()));
         }
         let content = fs::read_to_string(&path)?;
-        toml::from_str(&content).map_err(Error::Toml)
+        let mut p: Profile = toml::from_str(&content).map_err(Error::Toml)?;
+        p.provider.normalize_provider_type();
+        Ok(p)
     }
 
     /// Validate and write the profile to `<id>.toml` (atomic: temp + rename).
     /// If `old_id` is given and differs from the profile id, the old file is
     /// removed (id rename).
     pub fn save(&self, profile: &Profile, old_id: Option<&str>) -> Result<PathBuf> {
-        let errors = validation::validate_profile(profile);
+        // Legacy provider types (e.g. "vllm") are folded into the current
+        // values so the file on disk is always up to date.
+        let mut profile = profile.clone();
+        profile.provider.normalize_provider_type();
+        let errors = validation::validate_profile(&profile);
         if !errors.is_empty() {
             return Err(Error::Validation(errors.join("; ")));
         }
@@ -158,6 +163,8 @@ mod tests {
             model: ModelConfig {
                 default: "m".into(),
                 effort: None,
+                context_window: None,
+                models: Vec::new(),
             },
             codex: CodexConfig {
                 provider_name: id.into(),
