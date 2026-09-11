@@ -1,5 +1,7 @@
 // Agent Switch — root component.
-// State-based view switching (list / editor / launch), no router library.
+// State-based view switching (list / editor / sessions / about), no router
+// library. Launching a profile opens a lightweight modal (Launch.tsx), not
+// a separate view.
 // Watches "profiles://changed" so CLI-side TOML edits sync into the UI.
 // Bilingual: I18nProvider + a one-click toggle in the top-right corner.
 
@@ -13,15 +15,16 @@ import {
 } from "./api";
 import AboutPage from "./About";
 import Editor from "./Editor";
-import Launch from "./Launch";
+import LaunchModal from "./Launch";
 import SessionsPage from "./Sessions";
+import SettingsPage from "./Settings";
 import { I18nProvider, useI18n, type TKey } from "./i18n";
 
 type View =
   | { name: "list" }
   | { name: "editor"; id: string | null } // null = new profile
-  | { name: "launch"; preselect: string | null }
   | { name: "sessions" }
+  | { name: "settings" }
   | { name: "about" };
 
 export default function App() {
@@ -32,14 +35,19 @@ export default function App() {
   );
 }
 
-/** Display label for a provider type (legacy values pass through raw). */
+/** Display label for a provider type. The backend normalizes legacy
+ *  "vllm"/"openai" to "openai-compatible" on read; the extra arms cover
+ *  data served before a restart. Unknown values pass through raw. */
 function typeLabel(
   p: ProfileView,
   t: (key: TKey, vars?: Record<string, string | number>) => string,
 ): string {
   const v = p.provider_type;
   if (v === "relay") return t("typeRelay");
-  if (v === "vllm") return t("typeVllm");
+  if (v === "official") return t("typeOfficial");
+  if (v === "vllm" || v === "openai" || v === "openai-compatible") {
+    return t("typeOpenaiComp");
+  }
   return v;
 }
 
@@ -50,6 +58,7 @@ function AppInner() {
   const [status, setStatus] = useState<Status | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [launchingProfile, setLaunchingProfile] = useState<ProfileView | null>(null);
   const toastTimer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -63,6 +72,16 @@ function AppInner() {
       setStatus(await api.getStatus());
     } catch {
       // Keep the previous status if the call fails; the footer tolerates null.
+    }
+  }, []);
+
+  // Force a fresh CLI check (bypasses the backend's 30s status cache) —
+  // used after the user installs a missing CLI.
+  const recheckStatus = useCallback(async () => {
+    try {
+      setStatus(await api.getStatus(true));
+    } catch {
+      // Keep the previous status on failure.
     }
   }, []);
 
@@ -105,15 +124,24 @@ function AppInner() {
   }
 
   async function handleDelete(p: ProfileView) {
-    if (!window.confirm(t("confirmDelete", { id: p.id }))) {
+    if (!window.confirm(t("confirmDelete", { name: p.name }))) {
       return;
     }
     try {
       await api.deleteProfile(p.id);
-      showToast(t("toastDeleted", { id: p.id }));
+      showToast(t("toastDeleted", { name: p.name }));
       void refresh();
     } catch (e) {
       showToast(t("toastDeleteFailed", { err: errorMessage(e) }));
+    }
+  }
+
+  async function handleLogin(p: ProfileView) {
+    try {
+      const r = await api.loginProfile(p.id);
+      showToast(r.warning ? `⚠ ${r.warning}` : t("loginStarted"));
+    } catch (e) {
+      showToast(t("loginFail", { err: errorMessage(e) }));
     }
   }
 
@@ -135,7 +163,11 @@ function AppInner() {
           <button
             type="button"
             className={
-              view.name === "sessions" || view.name === "about" ? "" : "active"
+              view.name === "sessions" ||
+              view.name === "settings" ||
+              view.name === "about"
+                ? ""
+                : "active"
             }
             onClick={() => setView({ name: "list" })}
           >
@@ -147,6 +179,13 @@ function AppInner() {
             onClick={() => setView({ name: "sessions" })}
           >
             {t("navSessions")}
+          </button>
+          <button
+            type="button"
+            className={view.name === "settings" ? "active" : ""}
+            onClick={() => setView({ name: "settings" })}
+          >
+            {t("navSettings")}
           </button>
           <button
             type="button"
@@ -175,7 +214,8 @@ function AppInner() {
             error={listError}
             onAdd={() => setView({ name: "editor", id: null })}
             onEdit={(id) => setView({ name: "editor", id })}
-            onLaunch={(id) => setView({ name: "launch", preselect: id })}
+            onLaunch={(p) => setLaunchingProfile(p)}
+            onLogin={handleLogin}
             onDelete={handleDelete}
           />
         )}
@@ -183,7 +223,6 @@ function AppInner() {
         {view.name === "editor" && (
           <Editor
             id={view.id}
-            existingIds={profiles.map((p) => p.id)}
             onBack={goBack}
             onSaved={() => {
               showToast(t("toastSaved"));
@@ -193,20 +232,35 @@ function AppInner() {
           />
         )}
 
-        {view.name === "launch" && (
-          <Launch
-            profiles={profiles}
-            preselect={view.preselect}
-            onBack={goBack}
-          />
-        )}
+        {view.name === "sessions" && <SessionsPage status={status} />}
 
-        {view.name === "sessions" && <SessionsPage />}
+        {view.name === "settings" && <SettingsPage />}
 
         {view.name === "about" && (
-          <AboutPage status={status} onRecheck={() => void refresh()} />
+          <AboutPage status={status} onRecheck={() => void recheckStatus()} />
         )}
       </main>
+
+      {launchingProfile && (
+        <LaunchModal
+          profile={launchingProfile}
+          cliFound={
+            launchingProfile.cli === "claude"
+              ? status?.claude_found ?? false
+              : status?.codex_found ?? false
+          }
+          onRecheck={() => void recheckStatus()}
+          onClose={() => setLaunchingProfile(null)}
+          onLaunched={(r) => {
+            const started =
+              launchingProfile.cli === "claude"
+                ? t("launchStartedClaude")
+                : t("launchStartedCodex");
+            setLaunchingProfile(null);
+            showToast(r.warning ? `⚠ ${r.warning}` : started);
+          }}
+        />
+      )}
 
       {toast && <div className="toast">{toast}</div>}
 
@@ -237,7 +291,8 @@ interface ListViewProps {
   error: string | null;
   onAdd: () => void;
   onEdit: (id: string) => void;
-  onLaunch: (id: string) => void;
+  onLaunch: (p: ProfileView) => void;
+  onLogin: (p: ProfileView) => void;
   onDelete: (p: ProfileView) => void;
 }
 
@@ -247,6 +302,7 @@ function ListView({
   onAdd,
   onEdit,
   onLaunch,
+  onLogin,
   onDelete,
 }: ListViewProps) {
   const { t } = useI18n();
@@ -276,9 +332,7 @@ function ListView({
               <span className={`cli-chip ${p.cli === "claude" ? "claude" : "codex"}`}>
                 {p.cli === "claude" ? "Claude" : "Codex"}
               </span>
-              <span className="badge mono">{p.id}</span>
             </div>
-            {p.description && <p className="card-desc">{p.description}</p>}
             <dl className="card-meta">
               <dt>{t("cardModel")}</dt>
               <dd className="mono">{p.model}</dd>
@@ -295,10 +349,20 @@ function ListView({
               <button
                 type="button"
                 className="btn primary small"
-                onClick={() => onLaunch(p.id)}
+                onClick={() => onLaunch(p)}
               >
                 {t("launchBtn")}
               </button>
+              {p.provider_type === "official" && (
+                <button
+                  type="button"
+                  className="btn secondary small"
+                  onClick={() => onLogin(p)}
+                  title={t("loginHint")}
+                >
+                  {t("loginBtn")}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn secondary small"
