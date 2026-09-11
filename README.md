@@ -1,16 +1,49 @@
 # Agent Switch
 
-Agent Switch is a lightweight local tool that lets you run **Codex CLI** (OpenAI protocol,
-GPT-family models) and **Claude CLI** (Anthropic protocol, Claude-family models) against
-**any relay (中转站) or local vLLM deployment** — without ever touching your global Codex or
-Claude configuration.
+A profile-driven, multi-provider launcher for **Codex CLI** (OpenAI protocol)
+and **Claude CLI** (Anthropic protocol). Each provider is one small TOML
+*profile*; every launch runs in a fully isolated, persistent runtime — your
+global `~/.codex` / `~/.claude` are never read or written.
 
-Each provider is described by one small TOML *profile* file. Every time you launch, Agent
-Switch generates a fresh, isolated runtime — its own `CODEX_HOME` with a generated
-`config.toml` for Codex, or its own `CLAUDE_CONFIG_DIR` for Claude — and starts the CLI
-bound to that profile's provider, model and API key. You can run as many instances in
-parallel as you want, each pointed at a different provider, while your real `~/.codex`
-and `~/.claude` stay completely untouched.
+<p align="center">
+  <b>English</b> | <a href="README.zh.md">简体中文</a>
+</p>
+
+- [Overview](#overview)
+- [Features](#features)
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Installation](#installation)
+- [Usage](#usage)
+- [GUI tour](#gui-tour)
+- [Profile format](#profile-format)
+- [How isolation works](#how-isolation-works)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Contributing](#contributing)
+- [Donations](#donations)
+- [Acknowledgments](#acknowledgments)
+- [License](#license)
+
+## Overview
+
+### The problem
+
+Codex CLI and Claude CLI are both **bound to a single global configuration**
+(`~/.codex/config.toml`, `~/.claude`): the endpoint, the API key and the
+default model all live in that one place. As a result:
+
+- **Switching providers means editing the global config.** A new relay or a new
+  model means hand-editing a file that also holds your login state, plugins and
+  session history — easy to break, hard to roll back.
+- **The same CLI cannot serve two providers at once.** There is only one global
+  home: pointing one terminal at relay A and another at a local vLLM server is
+  impossible; whoever edited the config last wins.
+
+### The idea
+
+Agent Switch moves the "provider" out of the global config and into a small
+per-provider file:
 
 ```text
 Profile (profiles/<id>.toml)
@@ -22,116 +55,323 @@ Isolated persistent home (runtime/<profile-id>/.codex or .claude)
 Independent CODEX_HOME / CLAUDE_CONFIG_DIR
         |
         v
-Launch Codex CLI (OpenAI) or Claude CLI (Anthropic)
-        |
-        v
-Bound to the profile's provider
+Launch Codex CLI (OpenAI) or Claude CLI (Anthropic),
+bound to the profile's provider / model / key
 ```
 
-For example, three profiles can run three processes side by side:
+Each profile owns a **persistent** isolated home, so:
 
-```text
-relay-gpt.toml        relay-claude.toml        local-vllm.toml
-      |                       |                        |
-      v                       v                        v
-Codex (GPT relay)     Claude (Claude relay)    Codex (local vLLM)
-```
+- **One provider = one profile file.** Adding a provider never touches anything
+  global.
+- **Parallel providers.** The same CLI runs against any number of relays,
+  local servers or official endpoints at the same time, without interference.
+- **Zero-cost switching.** Switching providers means launching a different
+  profile; inside a session, `/model` switches models within the profile.
+- **Keys never hit disk.** The API key is injected as a per-process
+  environment variable only — it is never written into any config file or
+  start script.
+
+## Features
+
+- **One profile per provider** — a single TOML file defines the endpoint, API
+  key and default model (relay, self-hosted vLLM, or the official vendor
+  endpoint).
+- **Both protocols, both CLIs** — `codex` (OpenAI protocol, GPT-family models)
+  and `claude` (Anthropic protocol, Claude-family models); the profile decides
+  which CLI is launched.
+- **Fully isolated** — each profile owns a persistent runtime
+  (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`); your global `~/.codex` and
+  `~/.claude` are never read or written.
+- **Official vendor support** — point a profile at OpenAI / Anthropic
+  directly: use a Platform API key, or run a subscription login
+  (`agent-switch login`) once and let the isolated home keep the account.
+- **Session pool** — conversation history is stored per profile and resumable
+  from the CLI or the GUI; a session whose terminal is still open is flagged
+  **Open** and cannot be resumed twice. Pinned sessions are protected, and the
+  GUI can clear all non-pinned sessions in one click.
+- **Model auto-sync** — every new Codex launch strictly syncs the provider's
+  model list into the model catalog (models the server no longer serves are
+  removed, new ones added, the default model always kept), so `/model` in the
+  TUI never offers a model the provider stopped serving.
+- **Key-safe** — the API key is injected as a per-process environment
+  variable only; never written to any config file or start script, and masked
+  everywhere it is displayed.
+- **CLI + GUI** — a single-file command-line tool and a bilingual
+  (Chinese / English) Tauri desktop app that share the same profile files.
 
 ## Requirements
 
-- **Rust (stable)** — to build the CLI and core.
-- **Node.js 18+ / npm** — only needed for the GUI (Tauri desktop app); the CLI does not need it.
-- **Codex CLI** — for profiles with `cli = "codex"` (e.g. `npm install -g @openai/codex`).
-- **Claude CLI** — for profiles with `cli = "claude"` (e.g. `npm install -g @anthropic-ai/claude-code`).
-  You only need the CLIs you actually use; `agent-switch doctor` reports both.
-  Agent Switch never installs or modifies either CLI.
+Agent Switch drives the official CLI tools; it does **not** bundle them.
+Install whichever matches the profiles you want to use (once, globally):
 
-## Build & Install
+| Profile CLI | Install command |
+| --- | --- |
+| Codex CLI (OpenAI protocol) | `npm install -g @openai/codex` |
+| Claude CLI (Anthropic protocol) | `npm install -g @anthropic-ai/claude-code` |
+
+If a required CLI is missing, both the command line and the GUI tell you
+exactly which one to install — and the GUI disables launching until you do.
+`agent-switch doctor` checks everything at any time.
+
+## Quick start
+
+A three-step path from install to first conversation.
+
+**Step 1 — Install** (choose the form that fits you):
+
+- Command line only → [install the CLI](#1-cli-only-no-gui)
+- Desktop app → [install the GUI](#2-gui-desktop-app)
+
+**Step 2 — Check the environment**:
 
 ```bash
-# Build everything (CLI + core)
-cargo build --release
-
-# Install the agent-switch binary to your cargo bin
-cargo install --path crates/agent-switch-cli
+agent-switch doctor      # Codex / Claude CLI + config directories
 ```
 
-Verify the install:
+**Step 3 — Create a profile and launch**:
 
 ```bash
-agent-switch --version
-agent-switch doctor
+agent-switch add         # interactive: CLI / provider / endpoint / key / model
+agent-switch test <id>   # check the endpoint (optional)
+agent-switch run <id>    # launch — you land in the CLI's TUI
+agent-switch sessions    # list / resume past conversations
 ```
 
-## Commands
+> Running `agent-switch` with no arguments prints this quick-start guide
+> plus a command reference. `agent-switch <command> --help` covers one
+> command in detail.
+
+## Installation
+
+Both forms share one config root (Windows: `%APPDATA%\agent-switch`;
+macOS / Linux: `~/.agent-switch`) — **to fully uninstall, delete the program
+and that folder; nothing else is left behind.**
+
+### 1. CLI only (no GUI)
+
+#### Option A — One-line install (recommended)
+
+Downloads the latest release from
+[GitHub Releases](https://github.com/AntyRia/agent-switch/releases), installs
+it and configures `PATH` automatically.
+
+**Windows** (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.ps1 | iex
+```
+
+**macOS / Linux**:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
+```
+
+> Windows (x86_64) is the first published platform; the scripts already follow
+> the standard naming for macOS / Linux and will work as soon as those release
+> assets exist.
+
+Release asset naming: `agent-switch-<version>-<target>.zip` (standard Rust
+target names).
+
+| Platform | Asset name (v0.2.0 as an example) |
+| --- | --- |
+| Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip` |
+| macOS (Apple Silicon) | `agent-switch-0.2.0-aarch64-apple-darwin.zip` |
+| macOS (Intel) | `agent-switch-0.2.0-x86_64-apple-darwin.zip` |
+| Linux x64 | `agent-switch-0.2.0-x86_64-unknown-linux-gnu.zip` |
+
+Prefer to do it by hand? Download the matching zip, unzip it, and put
+`agent-switch(.exe)` anywhere on your `PATH`.
+
+**Uninstall**:
+
+| How you installed | How to remove |
+| --- | --- |
+| One-line (Windows) | Delete `%LOCALAPPDATA%\agent-switch` and remove its `bin` from your user PATH |
+| One-line (macOS / Linux) | Delete `~/.local/bin/agent-switch` |
+| Manual / cargo | Delete the executable, or `cargo uninstall agent-switch` |
+
+To also remove profiles and session history, delete the config root.
+
+#### Option B — Build from source
+
+Prerequisites: [Rust stable](https://rustup.rs), plus the underlying CLI(s)
+(see [Requirements](#requirements)).
+
+```bash
+git clone https://github.com/AntyRia/agent-switch.git && cd agent-switch
+cargo build --release                    # → target/release/agent-switch(.exe)
+cargo install --path crates/agent-switch-cli   # optional: onto your PATH
+```
+
+### 2. GUI desktop app
+
+The GUI ships the **complete feature set** (profile editor / launch / session
+pool / settings / logs / connection test / model list) — the CLI binary is not
+required. You still need the underlying Codex / Claude CLI(s) from npm (see
+[Requirements](#requirements)).
+
+#### Option A — Download the installer (recommended)
+
+Download the installer for your platform from
+[GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and run
+it.
+
+| Platform | Installer (v0.2.0 as an example) |
+| --- | --- |
+| Windows x64 | `Agent.Switch_0.2.0_x64-setup.exe` (NSIS) / `Agent.Switch.Setup.0.2.0.x64.msi` (GitHub replaces spaces in asset names with dots) |
+| macOS (Apple Silicon) | `Agent.Switch_0.2.0_aarch64.dmg` |
+| macOS (Intel) | `Agent.Switch_0.2.0_x64.dmg` |
+| Linux | `Agent.Switch_0.2.0_x64.AppImage` / `.deb` / `.rpm` |
+
+**Uninstall** — the normal way for your OS (Add or Remove Programs on Windows,
+drag out of Applications on macOS, `apt` / `rpm` on Linux). Profiles remain in
+the config root; delete that folder to remove everything.
+
+#### Option B — Build from source
+
+Prerequisites: [Rust stable](https://rustup.rs), **Node.js 18+** (Tauri
+frontend), the underlying CLI(s), and — on Linux — the
+[Tauri system dependencies](https://tauri.app/start/prerequisites/).
+
+```bash
+git clone https://github.com/AntyRia/agent-switch.git && cd agent-switch
+cd desktop
+npm install
+npm run tauri build            # installers → src-tauri/target/release/bundle/
+```
+
+## Usage
+
+### Commands
 
 | Command | Description |
 | --- | --- |
+| `agent-switch` | No arguments: prints a quick-start guide and command reference. |
 | `agent-switch init` | Create the config root (`profiles/` + `runtime/`). Idempotent. |
 | `agent-switch list` | List all profiles (ID / NAME / CLI / MODEL). |
 | `agent-switch show <PROFILE>` | Show one profile; the API key is always masked. |
-| `agent-switch add` | Interactively create a new profile. |
+| `agent-switch add` | Interactively create a new profile (empty answer = the bracketed default; pipe-friendly). |
 | `agent-switch edit <PROFILE>` | Open the profile TOML in `$EDITOR` (fallback: `notepad` on Windows, `vi` elsewhere). |
 | `agent-switch remove <PROFILE> [--yes]` | Delete a profile (asks for confirmation; `--yes` for scripts). |
-| `agent-switch test <PROFILE>` | Check the provider endpoint (codex: `GET <base_url>/models`; claude: `POST <base_url>/v1/messages` with a 1-token request — an empty model is auto-detected from the model list first). |
-| `agent-switch models <PROFILE>` | Fetch the provider's model list (codex: `GET <base_url>/models`; claude: `GET <base_url>/v1/models`), one id per line. |
+| `agent-switch test <PROFILE>` | Check the provider endpoint (codex: `GET <base_url>/models`; claude: `POST <base_url>/v1/messages` with a 1-token request). |
+| `agent-switch models <PROFILE>` | Fetch the provider's model list, one id per line. |
 | `agent-switch sessions` | List resumable sessions from all profile runtimes (session pool). |
 | `agent-switch run <PROFILE> [WORKSPACE] [-- cli args]` | Launch the profile's CLI (Codex or Claude) in an isolated runtime (default workspace: current directory). |
-| `agent-switch doctor` | Check Codex/Claude CLI availability and the config directories. |
+| `agent-switch login <PROFILE> [WORKSPACE]` | Log in to the official account of an `official` profile: runs `codex login` / the Claude login screen in the profile's isolated home. The subscription credential stays in that home — no API key needed afterwards. |
+| `agent-switch doctor` | Check Codex / Claude CLI availability and the config directories. |
 | `agent-switch cleanup` | Delete old runtime directories (keeps the newest 20, drops anything older than 7 days). |
+| `agent-switch logs [N]` | Show the last N lines of the app log (default 50). |
+| `agent-switch settings [--edit]` | Show or edit the global launch settings (dangerous mode, proxy, terminal). |
 
 ### Examples
 
 ```bash
-# First-time setup
-agent-switch init
+# Profile management
+agent-switch show my-relay-gpt
+agent-switch edit my-relay-gpt
+agent-switch remove my-relay-gpt
 
-# Create a profile (prompts: Profile ID, Name, CLI [codex/claude],
-# Provider type [relay/vllm], Base URL, API Key, Model — and Key mode
-# [auth_token/api_key] when CLI is claude; empty answer = default)
-agent-switch add
+# Extra arguments to the CLI go after --
+agent-switch run my-relay-gpt -- --model gpt-5.6-sol
 
-# See what you have
-agent-switch list
-agent-switch show relay-gpt
+# Resume a session (codex: resume, claude: --resume)
+agent-switch run my-relay-gpt -- resume <SESSION_ID>
+agent-switch run my-relay-claude -- --resume <SESSION_ID>
 
-# Edit a profile in your editor ($EDITOR, fallback notepad/vi)
-agent-switch edit relay-gpt
-
-# Test the provider endpoint before running
-agent-switch test relay-claude
-
-# List the models the provider offers
-agent-switch models relay-claude
-
-# Browse the session pool and resume a conversation
-agent-switch sessions
-agent-switch run relay-claude -- --resume <SESSION>
-agent-switch run relay-gpt -- resume <SESSION>
-
-# Run in an isolated runtime (the CLI follows the profile's `cli` field)
-agent-switch run relay-gpt
-agent-switch run relay-claude ~/Projects/demo
-agent-switch run relay-gpt -- --model gpt-5.6   # extra args go after --
-
-# Delete a profile (asks: Delete profile "relay-gpt"? [y/N])
-agent-switch remove relay-gpt
-
-# Environment health check
+# Environment health check / prune old runtimes / view the log
 agent-switch doctor
-
-# Prune old runtimes
 agent-switch cleanup
+agent-switch logs 80
 ```
+
+If a session's terminal is still open, resuming reports `session already
+open` — close that terminal first, then resume.
+
+### After launch (inside the TUI)
+
+`agent-switch run` drops you straight into the CLI's TUI (Codex or Claude),
+with the workspace set to the directory you ran it from:
+
+- **`/model`** — switch models within the profile: it lists every model of
+  the profile (default model + the profile's *Model list* + models synced
+  from the server); selecting one applies it and closes the picker
+  immediately.
+- **Conversation history** — stored in the profile's own isolated runtime and
+  survives exiting the TUI. Find it later with `agent-switch sessions` and
+  continue with `agent-switch run <PROFILE> -- resume <SESSION_ID>`.
+- **Quitting** — type `/exit` (or press `Ctrl+C`) to return to your own
+  terminal. The profile and all sessions are kept as-is, ready to `run` or
+  resume again.
 
 If the profile's CLI is not installed, `agent-switch run` prints:
 
 ```text
 Claude CLI not found.
-Please install Claude CLI first.
+Please install Claude CLI first:
+  npm install -g @anthropic-ai/claude-code
 ```
 
-(and the analogous `Codex CLI not found.` / `Please install Codex CLI first.` for codex profiles.)
+(with the analogous `Codex CLI not found.` /
+`npm install -g @openai/codex` message for codex profiles.)
+
+### Running multiple providers at the same time
+
+```bash
+# Terminal A
+agent-switch run relay-gpt
+
+# Terminal B
+agent-switch run relay-claude
+
+# Terminal C
+agent-switch run local-vllm
+```
+
+All processes run concurrently — each has its own `runtime/<profile-id>/`
+home and its own key environment variable, so they cannot interfere with each
+other.
+
+## GUI tour
+
+The desktop app (Tauri + TypeScript) shares the exact same profile files as
+the CLI and is **bilingual (Chinese / English)** — switch with the button in
+the top-right corner; your choice is remembered.
+
+- **Profile list** — one card per profile: CLI chip (Codex / Claude),
+  provider category, default model, key state, and Launch / Login
+  (official) / Edit / Delete actions. Launch opens a small dialog to pick the
+  workspace folder, then opens the CLI in your system terminal.
+- **Profile editor** — pick the CLI / protocol (Codex / OpenAI or Claude /
+  Anthropic), the provider category (relay / self-hosted OpenAI-compatible /
+  official) and, for Claude profiles, the key mode (Bearer / x-api-key). For
+  official profiles the vendor endpoint is fixed and the API key is optional.
+  *Fetch model list* next to the model field **strictly syncs** the *Model
+  list* field with the server (models the upstream no longer offers are
+  removed, new ones added, the default model always kept); the list is written
+  into the model catalog on launch and switchable with `/model` in the TUI.
+  A new profile's ID is an auto-generated UUID, kept internal — never shown
+  or edited.
+- **Sessions pool** — every resumable conversation across all profiles,
+  newest first, with chips labeling the CLI (codex / claude) and the channel
+  (profile name + provider category), the first user message, the original
+  working directory and a relative last-active time. **A session whose
+  terminal is still open shows a green "Open" indicator and its Resume button
+  is disabled** — close the terminal, then resume. Search, pin, rename,
+  delete, one-click Resume, and **Clear unpinned** (removes every session
+  that is not pinned or open) are all available.
+- **Settings** — dangerous mode (bypass all approvals and the sandbox on
+  every launch), an HTTP proxy that all launched CLIs route through
+  (localhost / 127.0.0.1 always bypassed), the terminal to use
+  (auto-detect or a custom path), and a read-only tail of the app log for
+  troubleshooting.
+- **About** — the CLI health check (install instructions when one is
+  missing, with a re-check button that unlocks launching after an install)
+  and the config directory location.
+- The status bar shows whether both CLIs are installed.
+- When a profile's CLI is missing, launching (and resuming its sessions) is
+  disabled with the exact `npm install` command shown — no cryptic errors.
 
 ## Profile format
 
@@ -202,130 +442,174 @@ default = "Qwen/Qwen3.8-27B"
 provider_name = "local-vllm"
 ```
 
+Official vendor — no relay at all (subscription login or a vendor API key):
+
+```toml
+id = "official-gpt"
+name = "OpenAI Official"
+cli = "codex"
+
+[provider]
+type = "official"
+# Displayed only; launches use the built-in vendor endpoint and never send
+# a base URL override. Leave at the vendor default.
+base_url = "https://api.openai.com/v1"
+# api_key is OPTIONAL: either a Platform API key (injected as
+# OPENAI_API_KEY / ANTHROPIC_API_KEY), or no key at all — then log in once
+# with `agent-switch login official-gpt` and the subscription account in
+# this profile's isolated home is used.
+
+[model]
+default = "gpt-5.6"
+
+[codex]
+provider_name = "official-gpt"
+```
+
+For claude: `type = "official"`, `base_url = "https://api.anthropic.com"`,
+and the key (when set) is always sent with the vendor's `x-api-key` header.
+
 Field notes:
 
 - `id` — `a-z`, `0-9`, `-`, `_`, max 64 chars; must match the file name.
-- `cli` — `"codex"` (OpenAI protocol, Codex CLI) or `"claude"` (Anthropic protocol,
-  Claude CLI). Absent = `codex` (legacy profiles keep working).
-- `provider.type` — `"relay"` (中转站) or `"vllm"` (local deployment). Legacy values
-  `openai-compatible` / `openai` are still accepted; the GUI normalizes them to
-  relay/vllm on save. The type is informational — it does not change launch behavior.
-- `provider.base_url` — for codex: the OpenAI-compatible root (usually ends in `/v1`);
-  for claude: the Anthropic server root (usually **without** `/v1`).
-- `provider.api_key` — the key, injected per-process at launch. Never written into any
-  runtime config or start script.
-- `provider.api_key_env` — optional: name of an environment variable holding the key.
-  When that variable is set and non-empty it takes precedence over `api_key`.
-- `provider.auth_mode` — claude only: `"auth_token"` (Bearer, default) or `"api_key"`
-  (x-api-key). Ignored by codex profiles.
-- `model.default` — model id (Codex config `model` / Claude `ANTHROPIC_MODEL`).
+- `cli` — `"codex"` (OpenAI protocol, Codex CLI) or `"claude"` (Anthropic
+  protocol, Claude CLI). Absent = `codex` (legacy profiles keep working).
+- `provider.type` — `"relay"` (third-party relay), `"vllm"` (local
+  deployment) or `"official"` (vendor direct). `relay` / `vllm` are
+  informational only; `official` changes launch behavior: no base URL
+  override, key optional (a keyless launch uses the subscription login stored
+  in the profile's isolated home, and codex pins
+  `cli_auth_credentials_store = "file"` so the login never leaks into the OS
+  keyring). Legacy values `openai-compatible` / `openai` are still accepted.
+- `provider.base_url` — for codex: the OpenAI-compatible root (usually ends
+  in `/v1`); for claude: the Anthropic server root (usually **without**
+  `/v1`).
+- `provider.api_key` — the key, injected per-process at launch. Never written
+  into any runtime config or start script.
+- `provider.api_key_env` — optional: name of an environment variable holding
+  the key. When that variable is set and non-empty it takes precedence over
+  `api_key`.
+- `provider.auth_mode` — claude only: `"auth_token"` (Bearer, default) or
+  `"api_key"` (x-api-key). Ignored by codex profiles.
+- `model.default` — model id (Codex config `model` / Claude
+  `ANTHROPIC_MODEL`).
 - `model.effort` — claude only, optional: reasoning effort injected as
-  `CLAUDE_CODE_EFFORT_LEVEL`. Set it when the server rejects the CLI's default
-  (some vLLM builds accept only `xhigh` / `medium` / `low`).
-- `codex.provider_name` — the name of the `[model_providers.<name>]` section in the
-  generated Codex config (only used by the codex engine).
+  `CLAUDE_CODE_EFFORT_LEVEL`. Set it when the server rejects the CLI's
+  default (some vLLM builds accept only `xhigh` / `medium` / `low`).
+- `model.models` — model list: **strictly synced** from the provider on every
+  new Codex launch (models the server no longer serves are removed, new ones
+  added, the default model always kept) and written into the model catalog,
+  so `/model` in the TUI never offers a model the provider stopped serving.
+- `codex.provider_name` — the name of the `[model_providers.<name>]` section
+  in the generated Codex config (only used by the codex engine).
 
-Ready-to-copy templates for all four combinations (relay/vLLM × codex/claude)
-live in [`examples/`](examples/).
+Ready-to-copy templates for every combination (relay / vLLM / official ×
+codex / claude) live in [`examples/`](examples/).
 
 ## How isolation works
 
 - Every profile owns a **persistent** isolated home `runtime/<profile-id>/`:
-  - **codex profiles**: `runtime/<profile-id>/.codex/` with a `config.toml` that is
-    regenerated from the profile on every launch (model, provider, base URL — but
-    **no API key**); the profile stays the single source of routing truth.
-  - **claude profiles**: `runtime/<profile-id>/.claude/` (Claude gets everything it
-    needs from environment variables; the directory collects session transcripts).
-- Because the home persists, **conversation history is per-profile and resumable**:
-  Claude transcripts and Codex rollouts live inside it, and the session pool
-  (`agent-switch sessions` / the GUI's Sessions page) lists them and resumes them in
-  the same isolated home. Your global `~/.codex` / `~/.claude` are never touched.
-- The CLI is started with `CODEX_HOME` (codex) or `CLAUDE_CONFIG_DIR` (claude) pointing
-  at that private directory, so it never reads or writes your global `~/.codex` / `~/.claude`.
-- For claude profiles the launch also sets `ANTHROPIC_BASE_URL`, `ANTHROPIC_MODEL` and
-  `ANTHROPIC_SMALL_FAST_MODEL` (pinned to the same model, so relays without a haiku do
-  not break background requests).
-- The API key is passed only as a per-process environment variable of the spawned CLI —
-  `OPENAI_API_KEY` for codex, `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` for claude
-  (per `auth_mode`). It is not exported into your shell and not stored in any config file.
-- **The launched CLI gets a clean environment.** Ambient `CLAUDE_CODE_*` / `CLAUDECODE`
-  nested-session markers and stray `ANTHROPIC_*` / `OPENAI_*` provider vars from the
-  shell (or the app the GUI was started from) are stripped; only the profile's own vars
-  are applied. This keeps transcript saving on even when the GUI itself runs inside a
-  Claude Code session, and keeps routing fully independent of the parent shell.
+  - **codex profiles**: `runtime/<profile-id>/.codex/` with a `config.toml`
+    that is regenerated from the profile on every launch (model, provider,
+    base URL — but **no API key**); the profile stays the single source of
+    routing truth.
+  - **claude profiles**: `runtime/<profile-id>/.claude/` (Claude gets
+    everything it needs from environment variables; the directory collects
+    session transcripts).
+- Because the home persists, **conversation history is per-profile and
+  resumable**: Claude transcripts and Codex rollouts live inside it, and the
+  session pool (`agent-switch sessions` / the GUI's Sessions page) lists them
+  and resumes them in the same isolated home.
+- The CLI is started with `CODEX_HOME` (codex) or `CLAUDE_CONFIG_DIR`
+  (claude) pointing at that private directory, so it never reads or writes
+  your global `~/.codex` / `~/.claude`.
+- For claude profiles the launch also sets `ANTHROPIC_BASE_URL`,
+  `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` (pinned to the same
+  model, so relays without a haiku do not break background requests).
+- The API key is passed only as a per-process environment variable of the
+  spawned CLI — `OPENAI_API_KEY` for codex, `ANTHROPIC_AUTH_TOKEN` or
+  `ANTHROPIC_API_KEY` for claude (per `auth_mode`). It is not exported into
+  your shell and not stored in any config file.
+- **The launched CLI gets a clean environment.** Ambient `CLAUDE_CODE_*` /
+  `CLAUDECODE` nested-session markers and stray `ANTHROPIC_*` / `OPENAI_*`
+  provider vars from the shell (or the app the GUI was started from) are
+  stripped; only the profile's own vars are applied. This keeps transcript
+  saving on even when the GUI itself runs inside a Claude Code session, and
+  keeps routing fully independent of the parent shell.
 - **First-launch onboarding is pre-seeded for claude homes.** A fresh
-  `runtime/<profile-id>/.claude/` is seeded with `settings.json` (`theme`, only when
-  absent) and `.claude.json` (`hasCompletedOnboarding`, plus a per-workspace
-  `hasTrustDialogAccepted` entry, merged without clobbering Claude's own state) so the
-  first launch skips the theme picker and the "trust this folder" dialog.
-- Legacy ephemeral `runtime/<uuid>` directories left over from older versions are pruned
-  automatically: anything older than 7 days is deleted and only the newest 20 are kept
-  (`agent-switch cleanup` does the same on demand). Per-profile homes are never pruned.
+  `runtime/<profile-id>/.claude/` is seeded with `settings.json` (`theme`,
+  only when absent) and `.claude.json` (`hasCompletedOnboarding`, plus a
+  per-workspace `hasTrustDialogAccepted` entry, merged without clobbering
+  Claude's own state) so the first launch skips the theme picker and the
+  "trust this folder" dialog.
+- Legacy ephemeral `runtime/<uuid>` directories left over from older versions
+  are pruned automatically: anything older than 7 days is deleted and only
+  the newest 20 are kept (`agent-switch cleanup` does the same on demand).
+  Per-profile homes are never pruned.
 
-### Running multiple providers at the same time
+## Troubleshooting
 
-```bash
-# Terminal A
-agent-switch run relay-gpt
+- **`Codex CLI not found.` / `Claude CLI not found.`** — the underlying CLI
+  for that profile is not installed. Install it with the printed `npm
+  install -g …` command, then retry (the GUI: press *Re-check* on the About
+  page or in the launch dialog).
+- **`session already open`** — the session's terminal is still running.
+  Close that terminal window, then resume.
+- **Connection test fails** — check `provider.base_url` (codex usually ends
+  in `/v1`, claude usually does not), the API key, and whether the model id
+  exists on that server (`agent-switch models <id>`).
+- **Something else** — `agent-switch logs` shows the last lines of the app
+  log (the GUI's Settings page has the same tail), and
+  `agent-switch doctor` re-checks the environment.
 
-# Terminal B
-agent-switch run relay-claude
+## Development
 
-# Terminal C
-agent-switch run local-vllm
-```
+- **Sandboxing** — set `AGENT_SWITCH_HOME` to point the CLI and GUI at a
+  different config root; nothing outside it is ever touched:
 
-All processes run concurrently — each has its own `runtime/<profile-id>/` home and its own
-key environment variable, so they cannot interfere with each other.
+  ```bash
+  export AGENT_SWITCH_HOME=/tmp/agent-switch-test   # Unix
+  # set AGENT_SWITCH_HOME=C:\temp\agent-switch-test # Windows
+  ```
 
-## GUI
+- **Run the GUI with hot reload**:
 
-The desktop GUI (Tauri + TypeScript) lives in `desktop/` and shares the exact same profile
-files as the CLI:
-
-```bash
-cd desktop
-npm install            # if npm is slow, retry: npm install --registry=https://registry.npmmirror.com
-npm run tauri dev      # development (hot reload)
-npm run tauri build    # packaged installer → src-tauri/target/release/bundle/
-```
-
-The GUI is **bilingual (Chinese / English)** — switch with the button in the top-right
-corner; your choice is remembered. The editor lets you pick the CLI/protocol
-(Codex/OpenAI or Claude/Anthropic), the provider category (relay / vLLM local) and, for
-Claude profiles, the key mode (Bearer / x-api-key). Next to the model field there is a
-*Fetch model list* (获取模型列表) button that pulls the available model ids from the
-base URL and offers them as suggestions — it auto-fills the first model when the field
-is empty. The status bar shows whether both CLIs are installed.
-
-The top bar also switches to the **Sessions pool** page (会话池): every resumable
-conversation across all profiles, newest first, with chips labeling the CLI (codex/claude)
-and the channel (profile name + relay/vLLM), the first user message, the original working
-directory and a relative last-active time. One click on *Resume* reopens the session in a
-new terminal, inside the same isolated home and the original workspace. In the editor, a
-new profile's ID is auto-generated from its display name (editable — touch the field to
-take over).
-
-Requires Node 18+ and the Rust stable toolchain (Tauri builds the shell with cargo).
-
-## Testing / sandboxing
-
-Set `AGENT_SWITCH_HOME` to point the CLI and GUI at a different config root:
-
-```bash
-export AGENT_SWITCH_HOME=/tmp/agent-switch-test   # Unix
-# set AGENT_SWITCH_HOME=C:\temp\agent-switch-test # Windows
-agent-switch init
-agent-switch doctor
-```
-
-This is how the test suite sandboxes itself; nothing outside the chosen root is ever touched.
+  ```bash
+  cd desktop
+  npm install
+  npm run tauri dev
+  ```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, build/test
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the project layout, build / test
 commands, and the security invariants every change must preserve.
+
+## Donations
+
+If Agent Switch saves you time, you are welcome to buy the maintainer a
+coffee. Donations go toward ongoing maintenance and the model API costs of
+development and testing.
+
+| Amount | Link |
+| --- | --- |
+| HKD 20 | [Donate via Stripe](https://buy.stripe.com/4gM7sLepN8bmdCq1eQ08g01) |
+| HKD 50 | [Donate via Stripe](https://buy.stripe.com/bJe5kD81pajucym9Lm08g02) |
+| HKD 100 | [Donate via Stripe](https://buy.stripe.com/9B67sL6XlfDObui9Lm08g03) |
+
+Thank you!
+
+## Acknowledgments
+
+- **HyperRoute · 超路由** — [hyperroute.cc](https://hyperroute.cc) — model
+  relay access (GPT / Claude) that works out of the box; thank you for the
+  support.
+- **linux.do** — [linux.do](https://linux.do/) — the open technical community
+  where much of this project's discussion and feedback happens; thank you.
 
 ## License
 
-[MIT](LICENSE) — see [LICENSE](LICENSE).
+[MIT](LICENSE) — see the [LICENSE](LICENSE) file for the full text.
+
+The software is provided "as is", without warranty of any kind. You are
+responsible for the providers, keys and content you configure with it.
