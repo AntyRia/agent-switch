@@ -11,10 +11,10 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use agent_switch_core::{
-    claude, codex, engine::Engine, health, launcher, models,
+    claude, codex, engine::Engine, health, launcher, logging, models,
     profile::{Profile, ProviderConfig, ModelConfig, CodexConfig},
     profile_store::ProfileStore,
-    runtime, sessions, validation,
+    runtime, sessions, settings::Settings, validation,
 };
 
 #[derive(Parser)]
@@ -24,24 +24,27 @@ use agent_switch_core::{
     about = "Profile-driven Codex / Claude multi-provider launcher"
 )]
 struct Cli {
+    /// The command to run; with none, a quick-start guide is printed
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
     /// Create the config root (profiles/ + runtime/); idempotent
     Init,
-    /// List all profiles
+    /// List all provider profiles
     List,
-    /// Show one profile (API key is masked)
+    /// Show one provider profile (API key is masked)
     Show {
         /// Profile id
         profile: String,
     },
-    /// Add a new profile interactively
+    /// Add a new provider profile interactively (the id is generated
+    /// automatically as a UUID)
     Add,
-    /// Edit a profile with $EDITOR (fallback: notepad / vi)
+    /// Edit a profile with $EDITOR (fallback: notepad / vi). The id field
+    /// cannot be changed.
     Edit {
         /// Profile id
         profile: String,
@@ -76,23 +79,54 @@ enum Command {
         #[arg(last = true, allow_hyphen_values = true)]
         extra_args: Vec<String>,
     },
+    /// Log in to the official account for an "official" profile: runs
+    /// `codex login` / `claude` in the profile's isolated home so the
+    /// subscription credentials stay per-profile (no API key needed after)
+    Login {
+        /// Profile id
+        profile: String,
+        /// Workspace directory (default: current directory)
+        workspace: Option<PathBuf>,
+    },
     /// Check that the Codex/Claude CLIs and the config directories are in place
     Doctor,
     /// Delete old runtime directories (keeps the newest 20)
     Cleanup,
+    /// Show the last lines of the log file (troubleshooting)
+    Logs {
+        /// Number of lines (default 50)
+        #[arg(default_value_t = 50)]
+        lines: usize,
+    },
+    /// Show or edit the global launch settings (dangerous mode, proxy,
+    /// terminal)
+    Settings {
+        /// Open settings.toml in $EDITOR instead of printing the values
+        #[arg(short, long)]
+        edit: bool,
+    },
 }
 
 fn main() {
     let cli = Cli::parse();
     let store = ProfileStore::new();
+    // File logging for troubleshooting (silent on failure; the log file is
+    // shared with the GUI's log viewer).
+    logging::init(&store.root);
     if let Err(err) = dispatch(cli, &store) {
+        logging::error(&format!("cli error: {err:#}"));
         eprintln!("error: {err}");
         std::process::exit(1);
     }
 }
 
 fn dispatch(cli: Cli, store: &ProfileStore) -> Result<()> {
-    match cli.command {
+    // No subcommand: a short, friendly quick-start instead of an error.
+    let Some(command) = cli.command else {
+        print_guide();
+        return Ok(());
+    };
+    match command {
         Command::Init => cmd_init(store),
         Command::List => cmd_list(store),
         Command::Show { profile } => cmd_show(store, &profile),
@@ -110,8 +144,60 @@ fn dispatch(cli: Cli, store: &ProfileStore) -> Result<()> {
             workspace,
             extra_args,
         } => cmd_run(store, &profile, workspace, &extra_args),
+        Command::Login {
+            profile,
+            workspace,
+        } => cmd_login(store, &profile, workspace),
         Command::Doctor => cmd_doctor(store),
         Command::Cleanup => cmd_cleanup(store),
+        Command::Logs { lines } => cmd_logs(lines),
+        Command::Settings { edit } => cmd_settings(edit),
+    }
+}
+
+/// Quick-start guide printed when the binary runs without a subcommand.
+fn print_guide() {
+    println!("agent-switch — profile-driven Codex / Claude multi-provider launcher");
+    println!();
+    println!("Quick start:");
+    println!("  1. agent-switch doctor      check the local Codex / Claude CLIs");
+    println!("  2. agent-switch add         create a provider profile (interactive)");
+    println!("  3. agent-switch run <id>    launch that profile in an isolated runtime");
+    println!();
+    println!("Profiles:   list   show <id>   edit <id>   remove <id>   add");
+    println!("Provider:   test <id>   models <id>");
+    println!("Sessions:   sessions");
+    println!("Launch:     run <profile> [-- <workspace>] [-- <extra CLI args>]");
+    println!("            login <profile>        official profiles only (subscription)");
+    println!("System:     init   doctor   cleanup   logs [n]   settings [--edit]");
+    println!();
+    println!("Run 'agent-switch <command> --help' for details on one command.");
+}
+
+/// Shared "profile not found" message with a pointer to `list`.
+fn get_profile(store: &ProfileStore, id: &str) -> Result<Profile> {
+    match store.get(id) {
+        Ok(p) => Ok(p),
+        Err(agent_switch_core::error::Error::ProfileNotFound(_)) => {
+            bail!("profile not found: {id} (run 'agent-switch list' to see available profiles)")
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Friendly missing-CLI notice (spec wording + the npm install command).
+fn print_cli_missing(engine: Engine) {
+    match engine {
+        Engine::Codex => {
+            println!("Codex CLI not found.");
+            println!("Please install Codex CLI first:");
+            println!("  npm install -g @openai/codex");
+        }
+        Engine::Claude => {
+            println!("Claude CLI not found.");
+            println!("Please install Claude CLI first:");
+            println!("  npm install -g @anthropic-ai/claude-code");
+        }
     }
 }
 
@@ -162,7 +248,7 @@ fn cmd_list(store: &ProfileStore) -> Result<()> {
 
 /// `show` — full profile; the API key is masked, never printed in full.
 fn cmd_show(store: &ProfileStore, id: &str) -> Result<()> {
-    let p = store.get(id)?;
+    let p = get_profile(store, id)?;
     println!("id: {}", p.id);
     println!("name: {}", p.name);
     println!("description: {}", p.description);
@@ -220,27 +306,67 @@ fn mask_key(key: &str) -> String {
 
 /// `add` — read the fields from stdin in a fixed order (pipe-friendly).
 /// Empty answers take the bracketed defaults; description is not prompted
-/// and stays empty.
+/// and stays empty. The id is generated automatically (UUID v4) and shown
+/// after creation — it is not asked for, and cannot be changed later.
 fn cmd_add(store: &ProfileStore) -> Result<()> {
+    println!("Creating a new profile — press Enter to accept the [default].");
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
-    let id = ask_line(&mut lines, "Profile ID:")?;
-    let name = ask_line(&mut lines, "Name:")?;
-    let cli_raw = ask_line(&mut lines, "CLI [codex/claude] (default codex):")?;
+    let name = ask_line(&mut lines, "Profile name:")?;
+    let cli_raw = ask_line(
+        &mut lines,
+        "CLI [codex / claude] (default codex; codex = OpenAI protocol, claude = Anthropic protocol):",
+    )?;
     let cli = match cli_raw.as_str() {
         "" => "codex".to_string(),
         c => c.trim().to_ascii_lowercase(),
     };
-    let type_raw = ask_line(&mut lines, "Provider type [relay/vllm] (default relay):")?;
+    println!(
+        "  provider types: relay = third-party relay API · vllm = self-hosted \
+         (vLLM / SGLang / llama.cpp …) · official = vendor API / subscription login"
+    );
+    let type_raw = ask_line(
+        &mut lines,
+        "Provider type [relay / vllm / official] (default relay):",
+    )?;
     let provider_type = match type_raw.as_str() {
         "" => "relay".to_string(),
+        "relay" => "relay".to_string(),
+        t if t.trim().to_ascii_lowercase().starts_with("openai")
+            || t.trim().to_ascii_lowercase() == "vllm" =>
+        {
+            "openai-compatible".to_string()
+        }
+        t if t.trim().to_ascii_lowercase() == "official" => "official".to_string(),
         t => t.trim().to_ascii_lowercase(),
     };
-    let base_url = ask_line(&mut lines, "Base URL:")?;
-    let api_key = ask_line(&mut lines, "API Key:")?;
-    let model = ask_line(&mut lines, "Model:")?;
-    // Key transport is only meaningful for the claude engine.
-    let auth_mode = if cli == "claude" {
+    let base_url = if provider_type == "official" {
+        // Official: the vendor endpoint is built in; an empty answer keeps
+        // the vendor default (recorded for display, never sent as override).
+        let raw = ask_line(&mut lines, "Base URL (official: leave empty for the vendor default):")?;
+        if raw.is_empty() {
+            match cli.as_str() {
+                "claude" => "https://api.anthropic.com".to_string(),
+                _ => "https://api.openai.com/v1".to_string(),
+            }
+        } else {
+            raw
+        }
+    } else {
+        ask_line(&mut lines, "Base URL (e.g. https://api.example.com/v1):")?
+    };
+    let api_key = ask_line(
+        &mut lines,
+        if provider_type == "official" {
+            "API Key (official: optional — a subscription login via `agent-switch login` also works; leave empty to use login):"
+        } else {
+            "API Key (leave empty only for local servers with no auth):"
+        },
+    )?;
+    let model = ask_line(&mut lines, "Default model (e.g. gpt-5 / claude-sonnet-4-5):")?;
+    // Key transport is only meaningful for the claude engine, and fixed to
+    // the vendor's x-api-key convention for official providers.
+    let auth_mode = if cli == "claude" && provider_type != "official" {
         let raw = ask_line(&mut lines, "Key mode [auth_token/api_key] (default auth_token):")?;
         match raw.as_str() {
             "" => None,
@@ -248,6 +374,21 @@ fn cmd_add(store: &ProfileStore) -> Result<()> {
         }
     } else {
         None
+    };
+
+    // Auto-generated UUID id (unique; hidden in the GUI, shown here).
+    let id = uuid::Uuid::new_v4().to_string();
+    // The codex provider name is a stable slug derived from the display
+    // name (falls back to the id when the name has no usable characters).
+    let provider_name: String = name
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let provider_name = if provider_name.is_empty() {
+        id.clone()
+    } else {
+        provider_name
     };
 
     let profile = Profile {
@@ -268,9 +409,11 @@ fn cmd_add(store: &ProfileStore) -> Result<()> {
         model: ModelConfig {
             default: model,
             effort: None,
+            context_window: None,
+            models: Vec::new(),
         },
         codex: CodexConfig {
-            provider_name: id.clone(),
+            provider_name,
         },
         cli,
     };
@@ -282,12 +425,15 @@ fn cmd_add(store: &ProfileStore) -> Result<()> {
         }
         std::process::exit(1);
     }
-    if store.path_for(&id).exists() {
-        bail!("profile already exists: {id}");
-    }
     store.init().ok();
     let path = store.save(&profile, None)?;
+    logging::info(&format!("created profile {id}"));
     println!("Created {}", path.display());
+    println!("ID: {id}");
+    println!();
+    println!("Next steps:");
+    println!("  agent-switch test {id}    check the endpoint");
+    println!("  agent-switch run {id}     launch the CLI with this profile");
     Ok(())
 }
 
@@ -303,12 +449,9 @@ fn ask_line<'a>(lines: &mut io::Lines<io::StdinLock<'a>>, prompt: &str) -> Resul
     Ok(line.trim().to_string())
 }
 
-/// `edit` — open the profile TOML in the user's editor, wait, re-validate.
-fn cmd_edit(store: &ProfileStore, id: &str) -> Result<()> {
-    // Fail early with a clear error if the profile does not exist.
-    store.get(id)?;
-    let path = store.path_for(id);
-    let editor = std::env::var("EDITOR")
+/// The user's editor: $EDITOR when set, else notepad (Windows) / vi.
+fn current_editor() -> String {
+    std::env::var("EDITOR")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .unwrap_or_else(|| {
@@ -317,7 +460,15 @@ fn cmd_edit(store: &ProfileStore, id: &str) -> Result<()> {
             } else {
                 "vi".to_string()
             }
-        });
+        })
+}
+
+/// `edit` — open the profile TOML in the user's editor, wait, re-validate.
+fn cmd_edit(store: &ProfileStore, id: &str) -> Result<()> {
+    // Fail early with a clear error if the profile does not exist.
+    get_profile(store, id)?;
+    let path = store.path_for(id);
+    let editor = current_editor();
     let status = match std::process::Command::new(&editor).arg(&path).status() {
         Ok(s) => s,
         Err(e) => bail!("failed to run editor {editor}: {e}"),
@@ -330,23 +481,20 @@ fn cmd_edit(store: &ProfileStore, id: &str) -> Result<()> {
         Ok(p) => p,
         Err(e) => bail!("failed to re-read {} after editing: {e}", path.display()),
     };
+    // Ids are auto-generated (UUID) and immutable: they are the file name
+    // and the key for runtimes/sessions, so renaming is refused.
+    if p.id != id {
+        bail!(
+            "the id field cannot be changed (it is auto-generated); \
+             revert it to \"{id}\" and save again"
+        );
+    }
     let errors = validation::validate_profile(&p);
     if !errors.is_empty() {
         for e in &errors {
             eprintln!("error: {e}");
         }
         std::process::exit(1);
-    }
-    if p.id != id {
-        // The editor changed the id inside the file: rename the file to
-        // follow it, unless the new id is already taken by another profile.
-        if store.path_for(&p.id).exists() {
-            bail!(
-                "cannot rename to id \"{}\": a profile with that id already exists",
-                p.id
-            );
-        }
-        store.save(&p, Some(id))?;
     }
     println!("saved");
     Ok(())
@@ -355,7 +503,7 @@ fn cmd_edit(store: &ProfileStore, id: &str) -> Result<()> {
 /// `remove` — confirm with y/yes (case-insensitive), otherwise "aborted".
 /// `--yes` skips the prompt for scripts.
 fn cmd_remove(store: &ProfileStore, id: &str, yes: bool) -> Result<()> {
-    store.get(id)?;
+    get_profile(store, id)?;
     if !yes {
         print!("Delete profile \"{id}\"? [y/N] ");
         io::stdout().flush().context("failed to write to stdout")?;
@@ -382,7 +530,7 @@ fn cmd_remove(store: &ProfileStore, id: &str, yes: bool) -> Result<()> {
 /// The engine picks the wire protocol (codex → GET /models, claude → POST
 /// /v1/messages with a 1-token request).
 fn cmd_test(store: &ProfileStore, id: &str) -> Result<()> {
-    let p = store.get(id)?;
+    let p = get_profile(store, id)?;
     let key = launcher::resolve_api_key(&p)?;
     let result = health::test_engine(
         p.engine(),
@@ -390,6 +538,7 @@ fn cmd_test(store: &ProfileStore, id: &str) -> Result<()> {
         &key,
         &p.model.default,
         p.provider.auth_mode.as_deref(),
+        p.is_official(),
     )?;
     println!("Profile: {}", p.id);
     if result.ok {
@@ -407,14 +556,16 @@ fn cmd_test(store: &ProfileStore, id: &str) -> Result<()> {
 
 /// `models` — fetch the provider's model list with the resolved API key.
 fn cmd_models(store: &ProfileStore, id: &str) -> Result<()> {
-    let p = store.get(id)?;
+    let p = get_profile(store, id)?;
     let key = launcher::resolve_api_key(&p)?;
-    let list = models::fetch_models(
-        p.engine(),
-        &p.provider.base_url,
-        &key,
-        p.provider.auth_mode.as_deref(),
-    )?;
+    // Listing is a key-only feature: a keyless official profile relies on a
+    // subscription login, and that login state has no list endpoint.
+    if p.is_official() && key.trim().is_empty() {
+        bail!("no key set — fetching the model list requires a key (subscription login has no list endpoint)");
+    }
+    // Official claude always speaks the vendor's x-api-key convention.
+    let auth_mode = if p.is_official() { Some("api_key") } else { p.provider.auth_mode.as_deref() };
+    let list = models::fetch_models(p.engine(), &p.provider.base_url, &key, auth_mode)?;
     if !list.ok {
         bail!("failed to fetch models: {}", list.message);
     }
@@ -498,6 +649,16 @@ fn truncate_preview(preview: &str) -> String {
 }
 
 /// `run` — the core command: isolated runtime + codex with per-process env.
+/// The session id when `extra_args` resumes a conversation
+/// (codex `resume <id>` / claude `--resume <id>`); None otherwise.
+fn resume_id_from_args(extra_args: &[String]) -> Option<String> {
+    extra_args
+        .iter()
+        .position(|a| a == "resume" || a == "--resume")
+        .and_then(|i| extra_args.get(i + 1))
+        .cloned()
+}
+
 fn cmd_run(
     store: &ProfileStore,
     id: &str,
@@ -505,13 +666,7 @@ fn cmd_run(
     extra_args: &[String],
 ) -> Result<()> {
     // 1. Find and validate the profile.
-    let profile = match store.get(id) {
-        Ok(p) => p,
-        Err(agent_switch_core::error::Error::ProfileNotFound(_)) => {
-            bail!("profile not found: {id} (run 'agent-switch list' to see available profiles)");
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let profile = get_profile(store, id)?;
     let errors = validation::validate_profile(&profile);
     if !errors.is_empty() {
         for e in &errors {
@@ -521,19 +676,10 @@ fn cmd_run(
     }
 
     // CLI availability for the profile's engine (exit 1, engine-specific
-    // wording).
+    // wording + the npm install command).
     let engine = profile.engine();
     if launcher::find_engine_binary(engine).is_err() {
-        match engine {
-            Engine::Codex => {
-                println!("Codex CLI not found.");
-                println!("Please install Codex CLI first.");
-            }
-            Engine::Claude => {
-                println!("Claude CLI not found.");
-                println!("Please install Claude CLI first.");
-            }
-        }
+        print_cli_missing(engine);
         std::process::exit(1);
     }
 
@@ -545,8 +691,39 @@ fn cmd_run(
         bail!("workspace does not exist: {}", workspace.display());
     }
 
-    // 2. Create the isolated runtime, resolve the key.
-    let runtime = runtime::create_runtime(store, &profile)?;
+    // 2a. Before a NEW conversation (not a resume) on the codex engine,
+    // refresh the profile's model list from the provider — strict sync
+    // (stale models removed, never blocks the launch). The refreshed list
+    // feeds the generated model catalog, so the TUI's /model switcher
+    // offers everything the server still serves.
+    let resume_id = resume_id_from_args(extra_args);
+    let profile = if resume_id.is_none() && engine == Engine::Codex {
+        match models::sync_profile_models(store, &profile) {
+            Ok((p, note)) => {
+                if let Some(n) = note {
+                    println!("note: {n}");
+                }
+                p
+            }
+            Err(e) => {
+                println!("note: model sync skipped: {e}");
+                profile
+            }
+        }
+    } else {
+        profile
+    };
+    if let Some(sid) = &resume_id {
+        // Remember the session as open while this process tree runs it;
+        // the GUI pool reads the same lock.
+        if let Err(e) = sessions::mark_session_open(store, sid) {
+            println!("note: {e}");
+        }
+    }
+
+    // 2b. Create the isolated runtime, resolve the key.
+    let settings = Settings::load();
+    let runtime = runtime::create_runtime(store, &profile, &workspace)?;
     let key = launcher::resolve_api_key(&profile)?;
 
     // Banner.
@@ -556,11 +733,80 @@ fn cmd_run(
     println!("Model:     {}", profile.model.default);
     println!("Workspace: {}", workspace.display());
     println!("Runtime:   {}", runtime.dir.display());
+    if settings.dangerous_flag(engine).is_some() {
+        println!("Bypass:    enabled (dangerous mode — no approval prompts)");
+    }
+    if let Some(proxy) = settings.proxy_url() {
+        println!("Proxy:     {proxy}");
+    }
 
     // 3. Spawn the CLI (stdio inherited), wait, exit with its exit code.
-    let code = launcher::launch_in_runtime(&runtime, &profile, key, &workspace, extra_args)?;
+    let code = launcher::launch_in_runtime(
+        &runtime,
+        &profile,
+        &settings,
+        key,
+        &workspace,
+        extra_args,
+    )?;
 
     // 4. Opportunistic cleanup, quietly.
+    let _ = runtime::cleanup(store);
+    std::process::exit(code);
+}
+
+/// `login` — official-account login in the profile's isolated home
+/// (`codex login` / the claude login screen). No provider vars and no key:
+/// the subscription credential lands in the isolated home only.
+fn cmd_login(store: &ProfileStore, id: &str, workspace: Option<PathBuf>) -> Result<()> {
+    let profile = get_profile(store, id)?;
+    let errors = validation::validate_profile(&profile);
+    if !errors.is_empty() {
+        for e in &errors {
+            eprintln!("error: {e}");
+        }
+        std::process::exit(1);
+    }
+    if !profile.is_official() {
+        bail!(
+            "'{}' is not an 'official' profile — login is only for vendor accounts \
+             (relay / self-hosted profiles use their API key instead; switch the \
+             provider type to official first if you meant to log in to the vendor)",
+            profile.id
+        );
+    }
+
+    let engine = profile.engine();
+    if launcher::find_engine_binary(engine).is_err() {
+        print_cli_missing(engine);
+        std::process::exit(1);
+    }
+
+    let workspace = match workspace {
+        Some(ws) => ws,
+        None => std::env::current_dir()?,
+    };
+    if !workspace.is_dir() {
+        bail!("workspace does not exist: {}", workspace.display());
+    }
+
+    let runtime = runtime::create_runtime(store, &profile, &workspace)?;
+    println!("Profile:   {}", profile.name);
+    println!("CLI:       {}", engine.value());
+    println!("Workspace: {}", workspace.display());
+    println!("Runtime:   {}", runtime.dir.display());
+    println!(
+        "{} — finish the browser flow in the terminal that opens below.",
+        match engine {
+            Engine::Codex => "Opening Codex login",
+            Engine::Claude => "Opening Claude (the login screen appears)",
+        }
+    );
+
+    let code = launcher::login_in_runtime(&runtime, &profile, &workspace)?;
+    if code == 0 {
+        println!("Login complete — this profile now uses the official account (no key needed).");
+    }
     let _ = runtime::cleanup(store);
     std::process::exit(code);
 }
@@ -574,10 +820,12 @@ fn cmd_doctor(store: &ProfileStore) -> Result<()> {
             println!("Codex Version: {v}");
         }
     } else {
-        // Exact spec wording for the not-found case (todo §4.1).
+        // Exact spec wording for the not-found case (todo §4.1), plus the
+        // npm install command.
         println!("Codex CLI not found.");
         println!();
-        println!("Please install Codex CLI first.");
+        println!("Please install Codex CLI first:");
+        println!("  npm install -g @openai/codex");
         ok_all = false;
     }
     // Claude is optional: a user with only codex profiles needs no claude,
@@ -591,6 +839,7 @@ fn cmd_doctor(store: &ProfileStore) -> Result<()> {
     } else {
         println!();
         println!("Claude CLI: ✗ not found (optional; required for claude profiles)");
+        println!("  npm install -g @anthropic-ai/claude-code");
     }
     println!();
     let profiles_dir = store.profiles_dir();
@@ -622,5 +871,58 @@ fn cmd_cleanup(store: &ProfileStore) -> Result<()> {
         deleted.len(),
         if deleted.len() == 1 { "y" } else { "ies" }
     );
+    Ok(())
+}
+
+/// `logs` — tail the log file (same file the GUI's log viewer shows).
+fn cmd_logs(lines: usize) -> Result<()> {
+    let Some(path) = logging::path() else {
+        println!("no log file available (the log directory could not be created)");
+        return Ok(());
+    };
+    let recent = logging::recent_lines(lines);
+    if recent.is_empty() {
+        println!("log is empty: {}", path.display());
+        return Ok(());
+    }
+    for line in recent {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// `settings` — print the global launch settings, or open settings.toml
+/// in the editor with `--edit`.
+fn cmd_settings(edit: bool) -> Result<()> {
+    let path = Settings::path();
+    if edit {
+        let editor = current_editor();
+        // Make sure the file exists so the editor does not start blank.
+        let s = Settings::load();
+        s.save().ok();
+        let status = std::process::Command::new(&editor)
+            .arg(&path)
+            .status()
+            .with_context(|| format!("failed to run editor {editor}"))?;
+        if !status.success() {
+            bail!("editor exited with status {status:?}; settings left unchanged");
+        }
+        println!("saved");
+        return Ok(());
+    }
+    let s = Settings::load();
+    println!("settings file: {}", path.display());
+    println!(
+        "dangerous_mode: {}",
+        if s.dangerous_mode { "true" } else { "false" }
+    );
+    match s.proxy_url() {
+        Some(url) => println!("proxy: {url}"),
+        None => println!("proxy: (disabled — direct connection)"),
+    }
+    match s.terminal.trim() {
+        "" => println!("terminal: (auto-detect)"),
+        t => println!("terminal: {t}"),
+    }
     Ok(())
 }
