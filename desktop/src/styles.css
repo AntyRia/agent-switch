@@ -68,6 +68,10 @@ body {
   letter-spacing: 0.2px;
 }
 
+.brand {
+  transition: color 0.15s ease;
+}
+
 .brand:hover {
   color: var(--accent);
 }
@@ -95,6 +99,7 @@ body {
   border-radius: 6px;
   padding: 5px 12px;
   cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .topbar-nav button:hover {
@@ -133,6 +138,9 @@ body {
 
 .editor-head {
   margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .editor-head h2,
@@ -209,6 +217,24 @@ code {
   gap: 16px;
 }
 
+/* Lists ease in on mount (page switches remount them; polling updates
+   keep row keys, so the animation never replays on refresh). */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.card-grid > .card,
+.session-list > .session-row {
+  animation: rise-in 0.22s ease-out both;
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -218,6 +244,14 @@ code {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease,
+    transform 0.15s ease;
+}
+
+.card:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.09), 0 1px 3px rgba(16, 24, 40, 0.05);
+  transform: translateY(-1px);
 }
 
 .card-head {
@@ -272,6 +306,42 @@ code {
   background: rgba(217, 119, 87, 0.1);
 }
 
+/* "Open" chip: a session still running in a launched terminal. It can
+   only be resumed again after that terminal is closed. */
+.open-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  border-radius: 999px;
+  padding: 2.5px 10px;
+  border: 1px solid rgba(26, 127, 75, 0.35);
+  background: rgba(26, 127, 75, 0.08);
+  color: #1a7f4b;
+  white-space: nowrap;
+}
+
+.open-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: open-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes open-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
 .card-desc {
   margin: 0;
   color: var(--muted);
@@ -321,6 +391,12 @@ code {
   grid-template-columns: 1fr auto;
   gap: 4px 16px;
   align-items: start;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.session-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+  box-shadow: 0 3px 10px rgba(16, 24, 40, 0.07), 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 
 .session-main {
@@ -367,6 +443,172 @@ code {
   grid-column: 1 / -1;
   margin: 0;
   font-size: 13px;
+}
+
+/* Pinned rows: warm tint + accent border, same family as the Claude chip. */
+.session-row.pinned {
+  border-color: rgba(194, 87, 27, 0.45);
+  background: linear-gradient(180deg, var(--panel), rgba(217, 119, 87, 0.05));
+}
+
+/* Row title (custom title or the first user message). */
+.session-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* Inline title editor. */
+.session-title-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-title-edit input {
+  font: inherit;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.session-title-edit input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Pin / rename / delete icon buttons on the row's side column. */
+.session-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.icon-btn {
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Pinned state: warm accent. */
+.icon-btn.active {
+  color: #c2571b;
+  border-color: rgba(194, 87, 27, 0.5);
+  background: rgba(217, 119, 87, 0.1);
+}
+
+.icon-btn.danger:hover:not(:disabled) {
+  color: var(--danger-hover);
+  border-color: var(--danger);
+  background: rgba(220, 38, 38, 0.06);
+}
+
+/* Pool toolbar: search + refresh. */
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.search-input {
+  font: inherit;
+  padding: 6px 12px;
+  min-width: 220px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.search-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+/* Pager footer. */
+.pager {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+/* ---------- Launch modal (lightweight, over the profile list) ---------- */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(16, 24, 40, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  animation: overlay-in 0.15s ease-out;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.modal {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.18);
+  animation: modal-in 0.16s ease-out;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+  padding: 20px 24px;
+  width: min(480px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.modal .launch-profile-line {
+  margin: -8px 0 0;
 }
 
 /* ---------- About page ---------- */
@@ -497,6 +739,26 @@ code {
   overflow-wrap: anywhere;
 }
 
+/* Launch modal: the "CLI not installed" notice box. */
+.cli-missing-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 6%, var(--panel));
+}
+
+.cli-missing-box .install-cmd {
+  margin: 0;
+}
+
+.cli-missing-box .btn {
+  align-self: flex-start;
+}
+
 /* ---------- Forms ---------- */
 
 .field-grid {
@@ -582,12 +844,18 @@ input[readonly] {
   cursor: pointer;
   background: var(--bg);
   color: var(--text);
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease,
+    color 0.12s ease, transform 0.06s ease;
 }
 
 .btn:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* Subtle press feedback. */
+.btn:not(:disabled):active {
+  transform: translateY(1px);
 }
 
 .btn.primary {
@@ -733,6 +1001,18 @@ input[readonly] {
   font-size: 13px;
   box-shadow: var(--shadow);
   z-index: 100;
+  animation: toast-in 0.18s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 /* ---------- Status bar footer ---------- */
@@ -761,4 +1041,137 @@ input[readonly] {
 
 .fail-text {
   color: var(--danger);
+}
+
+/* ---------- Settings page ---------- */
+
+.settings-page {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+.settings-section {
+  margin-bottom: 16px;
+}
+
+.settings-section > h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.check-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--accent);
+}
+
+.radio-row {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 10px;
+}
+
+.radio-row label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.radio-row input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.settings-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.settings-log-head h3 {
+  margin: 0;
+}
+
+.log-box {
+  margin: 8px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text);
+}
+
+/* ---------- About page — acknowledgements ---------- */
+
+.thanks-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13.5px;
+}
+
+.thanks-row:hover {
+  border-color: var(--accent);
+}
+
+/* External-link marker at the row's right edge. */
+.thanks-ext {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 14px;
+  transition: color 0.15s ease;
+}
+
+.thanks-row:hover .thanks-ext {
+  color: var(--accent);
+}
+
+/* ---------- Accessibility ---------- */
+
+/* Keyboard-only focus rings (mouse clicks do not trigger :focus-visible). */
+.btn:focus-visible,
+.icon-btn:focus-visible,
+.topbar-nav button:focus-visible,
+.brand:focus-visible,
+a:focus-visible,
+.thanks-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Honour the OS "reduce motion" preference: collapse every animation and
+   transition to (near) zero duration. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

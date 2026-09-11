@@ -1,6 +1,7 @@
 // About page: app identity + a friendly health check of the two local
 // CLIs (Codex / Claude) with install guidance, plus the data location.
 
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { type Status } from "./api";
 import { useI18n, type TKey } from "./i18n";
 
@@ -41,6 +42,16 @@ function CliCard({ name, found, version, installCmd, t }: CliCardProps) {
       )}
     </div>
   );
+}
+
+/** Open an external URL in the system browser (opener plugin); a plain
+ *  window.open keeps it working outside the Tauri shell. */
+async function openExternal(url: string) {
+  try {
+    await openUrl(url);
+  } catch {
+    window.open(url, "_blank");
+  }
 }
 
 export default function AboutPage({ status, onRecheck }: AboutProps) {
@@ -96,6 +107,47 @@ export default function AboutPage({ status, onRecheck }: AboutProps) {
             {t("aboutDataDir")} <code className="break-all">{status.config_dir}</code>
           </p>
         )}
+      </section>
+
+      <section className="about-section">
+        <h2>{t("aboutOssTitle")}</h2>
+        <p className="hint">{t("aboutOssBody")}</p>
+        <a
+          className="thanks-row"
+          href="https://github.com/AntyRia/agent-switch"
+          onClick={(e) => {
+            e.preventDefault();
+            void openExternal("https://github.com/AntyRia/agent-switch");
+          }}
+        >
+          <code className="mono">{t("aboutOssLink")}</code>
+        </a>
+      </section>
+
+      <section className="about-section">
+        <h2>{t("aboutThanksTitle")}</h2>
+        <a
+          className="thanks-row"
+          href="https://hyperroute.cc/"
+          onClick={(e) => {
+            e.preventDefault();
+            void openExternal("https://hyperroute.cc/");
+          }}
+        >
+          <span>{t("aboutThanksHyperRoute")}</span>
+          <span className="thanks-ext" aria-hidden="true">↗</span>
+        </a>
+        <a
+          className="thanks-row"
+          href="https://linux.do/"
+          onClick={(e) => {
+            e.preventDefault();
+            void openExternal("https://linux.do/");
+          }}
+        >
+          <span>{t("aboutThanksLdo")}</span>
+          <span className="thanks-ext" aria-hidden="true">↗</span>
+        </a>
       </section>
     </div>
   );

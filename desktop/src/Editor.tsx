@@ -15,11 +15,9 @@ import {
 import { useI18n } from "./i18n";
 
 interface EditorProps {
-  /** null = creating a new profile; otherwise the existing profile id. */
+  /** null = creating a new provider; otherwise the existing profile id.
+   *  (The id is an internal, auto-generated UUID — never shown or edited.) */
   id: string | null;
-  /** Ids of all existing profiles (create flow only): the auto-generated
-   *  id is suffixed until it does not collide. */
-  existingIds: string[];
   onBack: () => void;
   /** Called after a successful save; App navigates back + shows toast. */
   onSaved: () => void;
@@ -37,6 +35,14 @@ interface FormState {
   // Claude only: reasoning effort, injected as CLAUDE_CODE_EFFORT_LEVEL.
   // Empty = the CLI's default.
   effort: string;
+  // Codex only: context window (tokens) for the generated model catalog.
+  // Empty = Codex's default window; auto-filled from the server's
+  // max_model_len when fetching the model list.
+  context_window: string;
+  // Codex only: every known model id, comma/space separated (server list
+  // merged with manual entries). Written into the model catalog, which is
+  // what the TUI's /model switcher offers.
+  model_list: string;
   // Claude only: how the key is sent ("auth_token" = Bearer, the relay
   // convention and default; "api_key" = x-api-key).
   auth_mode: "auth_token" | "api_key";
@@ -64,61 +70,65 @@ const EMPTY_FORM: FormState = {
   api_key: "",
   model: "",
   effort: "",
+  context_window: "",
+  model_list: "",
   auth_mode: "auth_token",
   provider_name: "",
   api_key_env: null,
 };
 
-/** Derive a profile id from the display name: lowercased, non
- *  [a-z0-9] runs collapsed to "-", capped at 32 chars, "" → "provider".
- *  Collides with `existing` get a -2/-3/… suffix. */
-function generateId(name: string, existing: string[]): string {
-  const base =
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 32) || "provider";
-  let id = base;
-  let n = 2;
-  while (existing.includes(id)) {
-    id = `${base}-${n}`;
-    n++;
+/** Sentinel option value: the user opted out of the fetched model list
+ *  and wants a free-text model id instead. */
+const MODEL_CUSTOM = "__custom__";
+
+/** Split the model-list field into clean, de-duplicated ids
+ *  (comma/semicolon/whitespace separated, both scripts' separators). */
+function parseModelList(s: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of s.split(/[\s,;，；]+/)) {
+    const m = part.trim();
+    if (m !== "" && !seen.has(m)) {
+      seen.add(m);
+      out.push(m);
+    }
   }
-  return id;
+  return out;
 }
 
-/** Map a legacy provider type to the relay/vllm categories. A local
- *  base URL (localhost / 127.0.0.1) is assumed to be a vLLM deployment. */
+/** Map a legacy provider type to the current categories. "official"
+ *  passes through; a local base URL (localhost / 127.0.0.1) is assumed to
+ *  be a self-hosted (vllm) deployment. */
 function mapProviderType(type: string, baseUrl: string): string {
-  if (type === "relay" || type === "vllm") return type;
+  if (type === "relay" || type === "vllm" || type === "official") return type;
   const local = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(baseUrl);
   return local ? "vllm" : "relay";
 }
 
-export default function Editor({
-  id,
-  existingIds,
-  onBack,
-  onSaved,
-}: EditorProps) {
+export default function Editor({ id, onBack, onSaved }: EditorProps) {
   const { t } = useI18n();
   const editing = id !== null;
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  // Once the user types in the ID field (create flow) the auto-generated
-  // id stops tracking the name.
-  const [idTouched, setIdTouched] = useState(false);
   const [loading, setLoading] = useState(editing);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [test, setTest] = useState<TestState>({ status: "idle" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  // Fetched model list for the model field's datalist (null = not fetched
-  // for the current base_url/cli), plus its status message.
+  // Fetched model list (null = not fetched for the current base_url/cli),
+  // plus its status message. When non-empty the model field renders as a
+  // <select> listing every fetched model (a datalist would filter by the
+  // typed value and hide the other entries).
   const [models, setModels] = useState<string[] | null>(null);
   const [modelsBusy, setModelsBusy] = useState(false);
+  // True = free-text model input instead of the fetched-list select.
+  const [modelCustom, setModelCustom] = useState(false);
   const [modelsMsg, setModelsMsg] = useState<{
+    kind: "ok" | "fail";
+    text: string;
+  } | null>(null);
+  // Result line for the official-account login action.
+  const [loginMsg, setLoginMsg] = useState<{
     kind: "ok" | "fail";
     text: string;
   } | null>(null);
@@ -141,6 +151,9 @@ export default function Editor({
           api_key: p.provider.api_key,
           model: p.model.default,
           effort: p.model.effort ?? "",
+          context_window:
+            p.model.context_window != null ? String(p.model.context_window) : "",
+          model_list: (p.model.models ?? []).join(", "),
           auth_mode:
             p.provider.auth_mode === "api_key" ? "api_key" : "auth_token",
           provider_name: p.codex.provider_name,
@@ -162,15 +175,8 @@ export default function Editor({
   useEffect(() => {
     setModels(null);
     setModelsMsg(null);
+    setModelCustom(false);
   }, [form.base_url, form.cli]);
-
-  // Create flow: keep the id in sync with the name (regenerate on every
-  // name change / new-profile-id appearance) until the user edits it.
-  useEffect(() => {
-    if (!editing && !idTouched) {
-      setForm((f) => ({ ...f, id: generateId(f.name, existingIds) }));
-    }
-  }, [form.name, existingIds, editing, idTouched]);
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -184,18 +190,58 @@ export default function Editor({
     setModelsMsg(null);
     try {
       const r: ModelListResult = await api.fetchModels({
-        base_url: form.base_url.trim(),
+        base_url: effectiveBaseUrl,
         api_key: form.api_key,
         engine: form.cli,
         auth_mode: form.cli === "claude" ? form.auth_mode : null,
+        provider_type: form.provider_type,
       });
       if (r.ok && r.models.length > 0) {
         setModels(r.models);
+        // STRICT sync (mirrors core's merge_model_list): the stored list is
+        // replaced by the upstream list, so a model the provider no longer
+        // serves is never offered. The current default model is always kept
+        // (relays regularly omit it from /models) and `codex-auto-*` ids are
+        // excluded (OpenAI built-ins, meaningless for third-party profiles).
+        const current = parseModelList(form.model_list);
+        const defaultModel = form.model.trim();
+        const merged: string[] = [];
+        if (defaultModel !== "" && !r.models.includes(defaultModel)) {
+          merged.push(defaultModel);
+        }
+        for (const m of r.models) {
+          if (m.startsWith("codex-auto-") || merged.includes(m)) continue;
+          merged.push(m);
+        }
+        const added = merged.filter((m) => !current.includes(m)).length;
+        const removed = current.filter(
+          (m) => m !== defaultModel && !merged.includes(m),
+        ).length;
+        set("model_list", merged.join(", "));
         setModelsMsg({
           kind: "ok",
-          text: t("modelsFound", { n: r.models.length }),
+          text:
+            added > 0 || removed > 0
+              ? t("modelsSynced", { a: added, b: removed })
+              : t("modelsFound", { n: r.models.length }),
         });
-        if (!form.model.trim()) set("model", r.models[0]);
+        // vLLM servers advertise max_model_len: auto-fill the context
+        // window while the field is still empty (codex engine only).
+        if (
+          form.cli === "codex" &&
+          r.max_model_len != null &&
+          !form.context_window.trim()
+        ) {
+          set("context_window", String(r.max_model_len));
+        }
+        if (!form.model.trim()) {
+          set("model", r.models[0]);
+          setModelCustom(false);
+        } else if (!r.models.includes(form.model.trim())) {
+          // Keep the already-typed model: switch to the free-text input so
+          // it is not silently replaced by the list.
+          setModelCustom(true);
+        }
       } else if (r.ok) {
         setModelsMsg({ kind: "fail", text: t("modelsNotFound") });
       } else {
@@ -212,11 +258,12 @@ export default function Editor({
     setTest({ status: "busy" });
     try {
       const r: TestResult = await api.testConnection({
-        base_url: form.base_url.trim(),
+        base_url: effectiveBaseUrl,
         api_key: form.api_key,
         model: form.model.trim(),
         engine: form.cli,
         auth_mode: form.cli === "claude" ? form.auth_mode : null,
+        provider_type: form.provider_type,
       });
       setTest(
         r.ok
@@ -232,10 +279,36 @@ export default function Editor({
     }
   }
 
+  // Official-account login: opens a terminal in the profile's isolated home
+  // (codex login / the claude login screen). The credential stays in that
+  // home; the profile then launches without any key.
+  async function runLogin() {
+    setLoginMsg(null);
+    try {
+      const r = await api.loginProfile(form.id);
+      setLoginMsg({
+        kind: "ok",
+        text: r.warning ? `⚠ ${r.warning}` : t("loginStarted"),
+      });
+    } catch (e) {
+      setLoginMsg({ kind: "fail", text: t("loginFail", { err: errorMessage(e) }) });
+    }
+  }
+
   async function runSave() {
     setSaveError(null);
     setSaving(true);
-    const trimmedId = form.id.trim();
+    // The id is internal: the loaded id when editing, a fresh UUID when
+    // creating (crypto.randomUUID — unique, never surfaced in the UI).
+    const trimmedId = editing ? form.id.trim() : crypto.randomUUID();
+    const cw = form.context_window.trim();
+    // The context window is optional, but when present it must be a
+    // positive integer (it is written verbatim into the catalog JSON).
+    if (form.cli === "codex" && cw !== "" && !/^\d+$/.test(cw)) {
+      setSaveError(t("contextWindowInvalid"));
+      setSaving(false);
+      return;
+    }
     const profile: Profile = {
       id: trimmedId,
       name: form.name.trim(),
@@ -243,11 +316,18 @@ export default function Editor({
       cli: form.cli,
       provider: {
         type: form.provider_type.trim(),
-        base_url: form.base_url.trim(),
+        // Official: the vendor endpoint is hardcoded (the field is not
+        // shown); everything else saves the typed value.
+        base_url: isOfficial ? effectiveBaseUrl : form.base_url.trim(),
         api_key: form.api_key,
         api_key_env: form.api_key_env,
-        // Key mode is only meaningful for the claude engine.
-        auth_mode: form.cli === "claude" ? form.auth_mode : null,
+        // Key mode is only meaningful for the claude engine; the official
+        // claude always uses the vendor's x-api-key header (enforced by the
+        // backend), so nothing is stored for it.
+        auth_mode:
+          form.cli === "claude" && form.provider_type !== "official"
+            ? form.auth_mode
+            : null,
       },
       model: {
         default: form.model.trim(),
@@ -255,6 +335,17 @@ export default function Editor({
           form.cli === "claude" && form.effort.trim() !== ""
             ? form.effort.trim()
             : null,
+        context_window:
+          form.cli === "codex" && cw !== "" && /^\d+$/.test(cw)
+            ? Number(cw)
+            : null,
+        // The catalog must always carry the default model, so add it to
+        // the parsed list (order kept; duplicates dropped).
+        models: (() => {
+          const ids = parseModelList(form.model_list);
+          const def = form.model.trim();
+          return def !== "" && !ids.includes(def) ? [def, ...ids] : ids;
+        })(),
       },
       codex: {
         // Backend validation requires a non-empty provider name; fall back
@@ -273,6 +364,21 @@ export default function Editor({
   }
 
   const isClaude = form.cli === "claude";
+  const isOfficial = form.provider_type === "official";
+  // Official endpoints are fixed (never editable in the form).
+  const OFFICIAL_URLS = {
+    codex: "https://api.openai.com/v1",
+    claude: "https://api.anthropic.com",
+  } as const;
+  const effectiveBaseUrl = isOfficial
+    ? OFFICIAL_URLS[form.cli]
+    : form.base_url.trim();
+  // Models the select offers once a fetch happened: the merged list
+  // (fetched + saved), i.e. exactly what the model catalog will carry.
+  const listOptions =
+    models !== null && models.length > 0
+      ? parseModelList(form.model_list)
+      : [];
 
   if (loading) {
     return <p className="hint">{t("editorLoad")}</p>;
@@ -293,28 +399,13 @@ export default function Editor({
   return (
     <div className="panel editor">
       <div className="editor-head">
-        <h2>{editing ? t("editTitle", { id: id! }) : t("newTitle")}</h2>
+        <button type="button" className="btn secondary small" onClick={onBack}>
+          ← {t("back")}
+        </button>
+        <h2>{editing ? t("editTitle", { name: form.name }) : t("newTitle")}</h2>
       </div>
 
       <div className="field-grid">
-        <label className="field">
-          <span>
-            {t("fId")}{" "}
-            {editing && <em className="muted">{t("fIdReadOnly")}</em>}
-          </span>
-          <input
-            type="text"
-            value={form.id}
-            readOnly={editing}
-            placeholder={t("fIdPh")}
-            onChange={(e) => {
-              set("id", e.target.value);
-              setIdTouched(true);
-            }}
-          />
-          {!editing && <span className="hint">{t("idAutoHint")}</span>}
-        </label>
-
         <label className="field">
           <span>{t("fName")}</span>
           <input
@@ -351,17 +442,30 @@ export default function Editor({
         <label className="field">
           <span>{t("fType")}</span>
           <select
-            value={form.provider_type === "vllm" ? "vllm" : "relay"}
-            onChange={(e) =>
-              set("provider_type", e.target.value === "vllm" ? "vllm" : "relay")
+            value={
+              form.provider_type === "vllm" || form.provider_type === "official"
+                ? form.provider_type
+                : "relay"
             }
+            onChange={(e) => {
+              const v = e.target.value;
+              setForm((f) => ({ ...f, provider_type: v }));
+            }}
           >
             <option value="relay">{t("typeRelayOpt")}</option>
-            <option value="vllm">{t("typeVllmOpt")}</option>
+            <option value="vllm">{t("typeOpenaiCompOpt")}</option>
+            <option value="official">{t("typeOfficialOpt")}</option>
           </select>
+          <span className="hint">
+            {form.provider_type === "official"
+              ? t("typeOfficialHint")
+              : t("typeOpenaiCompHint")}
+          </span>
         </label>
 
-        {isClaude && (
+        {/* Key mode is a relay convention; the official claude always uses
+            the vendor's x-api-key header, so the dropdown is hidden there. */}
+        {isClaude && !isOfficial && (
           <label className="field">
             <span>{t("fAuthMode")}</span>
             <select
@@ -379,17 +483,21 @@ export default function Editor({
           </label>
         )}
 
-        <label className="field span-2">
-          <span>{t("fBaseUrl")}</span>
-          <input
-            type="text"
-            value={form.base_url}
-            placeholder={
-              isClaude ? t("basePhClaude") : t("basePhCodex")
-            }
-            onChange={(e) => set("base_url", e.target.value)}
-          />
-        </label>
+        {/* Official: the vendor endpoint is fixed — the field is hidden and
+            the hardcoded URL is written on save (mirrors cc-switch). */}
+        {!isOfficial && (
+          <label className="field span-2">
+            <span>{t("fBaseUrl")}</span>
+            <input
+              type="text"
+              value={form.base_url}
+              placeholder={
+                isClaude ? t("basePhClaude") : t("basePhCodex")
+              }
+              onChange={(e) => set("base_url", e.target.value)}
+            />
+          </label>
+        )}
 
         <label className="field span-2">
           <span>{t("fKey")}</span>
@@ -397,7 +505,7 @@ export default function Editor({
             <input
               type={showKey ? "text" : "password"}
               value={form.api_key}
-              placeholder={t("keyPh")}
+              placeholder={isOfficial ? t("keyPhOfficial") : t("keyPh")}
               onChange={(e) => set("api_key", e.target.value)}
             />
             <button
@@ -417,24 +525,50 @@ export default function Editor({
               type="button"
               className="btn link"
               onClick={runFetchModels}
-              disabled={modelsBusy || !form.base_url.trim()}
+              disabled={modelsBusy || !effectiveBaseUrl}
             >
               {modelsBusy ? t("fetchingModels") : t("fetchModelsBtn")}
             </button>
           </div>
-          <input
-            type="text"
-            list="model-options"
-            value={form.model}
-            placeholder={isClaude ? t("modelPhClaude") : t("modelPhCodex")}
-            onChange={(e) => set("model", e.target.value)}
-          />
-          {models !== null && (
-            <datalist id="model-options">
-              {models.map((m) => (
-                <option key={m} value={m} />
+          {listOptions.length > 0 && !modelCustom ? (
+            <select
+              value={form.model || listOptions[0]}
+              onChange={(e) => {
+                if (e.target.value === MODEL_CUSTOM) {
+                  setModelCustom(true);
+                  return;
+                }
+                set("model", e.target.value);
+              }}
+            >
+              {form.model !== "" && !listOptions.includes(form.model) && (
+                <option value={form.model}>{form.model}</option>
+              )}
+              {listOptions.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
               ))}
-            </datalist>
+              <option value={MODEL_CUSTOM}>{t("modelCustomOpt")}</option>
+            </select>
+          ) : (
+            <>
+              <input
+                type="text"
+                value={form.model}
+                placeholder={isClaude ? t("modelPhClaude") : t("modelPhCodex")}
+                onChange={(e) => set("model", e.target.value)}
+              />
+              {models !== null && models.length > 0 && modelCustom && (
+                <button
+                  type="button"
+                  className="btn link"
+                  onClick={() => setModelCustom(false)}
+                >
+                  {t("modelFromList")}
+                </button>
+              )}
+            </>
           )}
           <span className="hint">
             {isClaude ? t("modelHintClaude") : t("modelHintCodex")}
@@ -445,6 +579,33 @@ export default function Editor({
             </span>
           )}
         </div>
+
+        {!isClaude && (
+          <label className="field span-2">
+            <span>{t("fModelList")}</span>
+            <input
+              type="text"
+              value={form.model_list}
+              placeholder={t("modelListPh")}
+              onChange={(e) => set("model_list", e.target.value)}
+            />
+            <span className="hint">{t("modelListHint")}</span>
+          </label>
+        )}
+
+        {!isClaude && (
+          <label className="field span-2">
+            <span>{t("fContextWindow")}</span>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={form.context_window}
+              placeholder={t("contextWindowPh")}
+              onChange={(e) => set("context_window", e.target.value)}
+            />
+            <span className="hint">{t("contextWindowHint")}</span>
+          </label>
+        )}
 
         {isClaude && (
           <label className="field span-2">
@@ -469,6 +630,21 @@ export default function Editor({
         >
           {test.status === "busy" ? t("testing") : t("testBtn")}
         </button>
+
+        {isOfficial && editing && (
+          <button
+            type="button"
+            className="btn secondary"
+            onClick={runLogin}
+            title={t("loginHint")}
+          >
+            {t("loginBtn")}
+          </button>
+        )}
+
+        {loginMsg && (
+          <span className={`test-result ${loginMsg.kind}`}>{loginMsg.text}</span>
+        )}
 
         {test.status === "ok" && (
           <span className="test-result ok">
@@ -495,7 +671,11 @@ export default function Editor({
           type="button"
           className="btn primary"
           onClick={runSave}
-          disabled={saving || !form.id.trim() || !form.name.trim()}
+          disabled={
+            saving ||
+            !form.name.trim() ||
+            (editing && form.id.trim() === "")
+          }
         >
           {saving ? t("saving") : t("save")}
         </button>
