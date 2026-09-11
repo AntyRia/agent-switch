@@ -1,7 +1,8 @@
 [package]
 name = "agent_switch_desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+repository = "https://github.com/AntyRia/agent-switch"
 
 [lib]
 name = "agent_switch_desktop_lib"
@@ -17,6 +18,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 agent-switch-core = { path = "../../crates/agent-switch-core" }
 notify = "6"
+tauri-plugin-opener = "2.5.5"
 
 # Keep this crate in its own workspace so it maintains its own target/ dir
 # and does not join the root ModelDock/agent-switch workspace.
