@@ -1,0 +1,25 @@
+# OpenAI official (Codex CLI) — no relay.
+#
+# Two ways to authenticate:
+#   1. API key: set api_key below (injected as OPENAI_API_KEY per launch); or
+#   2. Subscription: leave api_key empty and run
+#      `agent-switch login official-gpt-codex` once — the `codex login`
+#      browser flow lands in THIS profile's isolated home only.
+
+id = "official-gpt-codex"
+name = "OpenAI Official"
+description = "Vendor direct, OpenAI protocol via Codex CLI"
+cli = "codex"
+
+[provider]
+type = "official"
+# Displayed only: launches use the built-in vendor endpoint and never send
+# a base URL override.
+base_url = "https://api.openai.com/v1"
+# api_key = "sk-your-openai-platform-key"  # optional
+
+[model]
+default = "gpt-5.6"
+
+[codex]
+provider_name = "official-gpt-codex"

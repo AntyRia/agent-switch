@@ -1,0 +1,24 @@
+# Anthropic official (Claude CLI) — no relay.
+#
+# Two ways to authenticate:
+#   1. API key: set api_key below (sent with the vendor's x-api-key header);
+#   2. Subscription (Pro/Max): leave api_key empty and run
+#      `agent-switch login official-claude` once — the login screen lands in
+#      THIS profile's isolated home only.
+
+id = "official-claude"
+name = "Anthropic Official"
+description = "Vendor direct, Anthropic protocol via Claude CLI"
+cli = "claude"
+
+[provider]
+type = "official"
+# Displayed only: launches never set ANTHROPIC_BASE_URL.
+base_url = "https://api.anthropic.com"
+# api_key = "sk-ant-your-console-key"  # optional
+
+[model]
+default = "claude-sonnet-4-5"
+
+[codex]
+provider_name = "official-claude"
