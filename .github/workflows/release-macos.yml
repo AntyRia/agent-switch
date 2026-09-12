@@ -172,6 +172,12 @@ jobs:
       - name: Verify Windows package selection after macOS release
         shell: pwsh
         run: |
-          ./scripts/install.ps1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          try {
+            ./scripts/install.ps1
+            if ($LASTEXITCODE -ne 0) { throw "Installed CLI exited with $LASTEXITCODE" }
+          } catch {
+            $message = $_.Exception.Message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Windows installer::$message"
+            exit 1
+          }
           Write-Output "::notice::Installed $(agent-switch --version) through the Windows installer"
