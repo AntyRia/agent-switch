@@ -1,0 +1,111 @@
+name: Release macOS
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      CARGO_BUILD_JOBS: '2'
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Check platform and version
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          test "${RELEASE_TAG#v}" = "$(node -p 'require("./desktop/package.json").version')"
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Test and build CLI
+        shell: bash
+        run: |
+          python3 -m unittest discover -s tests -p 'test_install.py'
+          cargo test --locked
+          cargo build --locked --release
+          test "$(target/release/agent-switch --version)" = "agent-switch ${RELEASE_TAG#v}"
+      - name: Build GUI
+        working-directory: desktop
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm run tauri build -- --bundles dmg --ci -- --locked
+      - name: Verify and package
+        shell: bash
+        run: |
+          VERSION="${RELEASE_TAG#v}"
+          OUT="$RUNNER_TEMP/release"
+          mkdir -p "$OUT"
+          codesign --verify --deep --strict 'desktop/src-tauri/target/release/bundle/macos/Agent Switch.app'
+          cp "desktop/src-tauri/target/release/bundle/dmg/Agent Switch_${VERSION}_aarch64.dmg" "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
+          hdiutil verify "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
+          file target/release/agent-switch | grep -q arm64
+          zip -j "$OUT/agent-switch-${VERSION}-aarch64-apple-darwin.zip" target/release/agent-switch
+          cd "$OUT"
+          shasum -a 256 "Agent.Switch_${VERSION}_aarch64.dmg" "agent-switch-${VERSION}-aarch64-apple-darwin.zip" > SHA256SUMS.txt
+          shasum -a 256 -c SHA256SUMS.txt
+      - name: Prepare release notes
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          version = os.environ['RELEASE_TAG'].removeprefix('v')
+          changelog = Path('CHANGELOG.md').read_text()
+          section = changelog.split(f'## [{version}]', 1)[1].split('\n## [', 1)[0]
+          notes = f'Agent Switch {version} — macOS Apple Silicon\n\n' + section.split('\n', 1)[1].strip()
+          notes += '\n\n### Installation / 安装\n\n'
+          notes += 'Open the DMG and drag Agent Switch to Applications, or extract the CLI ZIP and place agent-switch on PATH. Codex CLI / Claude Code must be installed separately.\n\n'
+          notes += 'The app is ad-hoc signed and not notarized by Apple. Check SHA256SUMS.txt before opening it. If macOS blocks an app you trust, use System Settings → Privacy & Security → Open Anyway.\n\n'
+          notes += '打开 DMG，将 Agent Switch 拖入“应用程序”；CLI 用户解压 ZIP 并将 agent-switch 放入 PATH。Codex CLI / Claude Code 需单独安装。应用采用 ad-hoc 签名、未公证，请先核对校验和；确认信任来源后，可在“隐私与安全性”中选择“仍要打开”。\n\n'
+          notes += 'These packages are for Apple Silicon. Windows users can download v0.2.0; Intel and Linux users can build from source.\n'
+          (Path(os.environ['RUNNER_TEMP']) / 'release-notes.md').write_text(notes)
+      - name: Publish packages
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/release-state.json" 2>/dev/null; then
+            test "$(node -p 'require(process.argv[1]).isDraft' "$RUNNER_TEMP/release-state.json")" = true
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "Agent Switch $RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release/"* --clobber
+          gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false --latest
+      - name: Verify public macOS installation
+        shell: bash
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | AGENT_SWITCH_INSTALL_DIR="$RUNNER_TEMP/install-check" /bin/sh
+          test "$("$RUNNER_TEMP/install-check/agent-switch" --version)" = "agent-switch ${RELEASE_TAG#v}"
+
+  verify-windows-installer:
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify Windows package selection after macOS release
+        shell: pwsh
+        run: |
+          ./scripts/install.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

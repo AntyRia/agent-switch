@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Installs the agent-switch CLI from the latest GitHub release (macOS/Linux).
+# Installs the newest published CLI package for this platform (macOS/Linux).
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
@@ -25,19 +25,44 @@ case "$OS" in
   *) echo "unsupported OS: $OS (need macOS or Linux)" >&2; exit 1 ;;
 esac
 
-API="https://api.github.com/repos/${REPO}/releases/latest"
-echo "Querying latest release of ${REPO} ..."
-JSON="$(curl -fsSL -H 'User-Agent: agent-switch-install' "$API")"
-TAG="$(printf '%s\n' "$JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-VERSION="${TAG#v}"
-ASSET="agent-switch-${VERSION}-${TARGET}.zip"
-# Keep case patterns out of command substitution: macOS /bin/sh can misparse
-# them when this script is read from a pipe, even when `sh -n` succeeds.
-URL="$(printf '%s\n' "$JSON" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' | awk -v asset="$ASSET" '
-  length($0) >= length(asset) + 1 && substr($0, length($0) - length(asset)) == "/" asset { print; exit }
-')"
-if [ -z "${TAG:-}" ] || [ -z "${URL:-}" ]; then
-  echo "Asset '${ASSET}' not found in release '${TAG:-unknown}'. Check the release assets or build from source." >&2
+API="https://api.github.com/repos/${REPO}/releases"
+fetch_release() {
+  curl -fsSL --connect-timeout 10 --max-time 60 -H 'User-Agent: agent-switch-install' "$1"
+}
+select_package() {
+  URL=
+  if printf '%s\n' "$1" | grep -Eq '^[[:space:]]*"(draft|prerelease)": *true'; then
+    return
+  fi
+  TAG="$(printf '%s\n' "$1" | sed -n 's/^[[:space:]]*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
+  VERSION="${TAG#v}"
+  ASSET="agent-switch-${VERSION}-${TARGET}.zip"
+  # Avoid case patterns inside command substitution: macOS /bin/sh can
+  # misparse them when reading a pipe, even when `sh -n` succeeds.
+  URL="$(printf '%s\n' "$1" | sed -n 's/^[[:space:]]*"browser_download_url": *"\([^"]*\)".*/\1/p' | awk -v asset="$ASSET" '
+    length($0) >= length(asset) + 1 && substr($0, length($0) - length(asset)) == "/" asset { print; exit }
+  ')"
+}
+
+echo "Finding the latest ${TARGET} package from ${REPO} ..."
+JSON="$(fetch_release "$API/latest")"
+select_package "$JSON"
+LATEST_TAG="$TAG"
+PAGE=1
+while [ -z "$URL" ]; do
+  RELEASES="$(fetch_release "$API?per_page=100&page=$PAGE")"
+  TAGS="$(printf '%s\n' "$RELEASES" | sed -n 's/^[[:space:]]*"tag_name": *"\([^"]*\)".*/\1/p')"
+  [ -n "$TAGS" ] || break
+  for RELEASE_TAG in $TAGS; do
+    [ "$RELEASE_TAG" != "$LATEST_TAG" ] || continue
+    JSON="$(fetch_release "$API/tags/$RELEASE_TAG")"
+    select_package "$JSON"
+    [ -z "$URL" ] || break
+  done
+  PAGE=$((PAGE + 1))
+done
+if [ -z "$URL" ]; then
+  echo "No published package for ${TARGET}. See https://github.com/${REPO}/releases or build from source." >&2
   exit 1
 fi
 
@@ -61,6 +86,8 @@ case ":${PATH}:" in
     if [ -z "${AGENT_SWITCH_INSTALL_DIR:-}" ]; then
       for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
         if [ -f "$rc" ] && ! grep -qs "agent-switch PATH" "$rc"; then
+          # Preserve $PATH for the shell that later sources this file.
+          # shellcheck disable=SC2016
           { printf '\n# agent-switch PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR"; } >> "$rc" 2>/dev/null || true
         fi
       done

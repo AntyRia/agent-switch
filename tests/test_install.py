@@ -34,23 +34,33 @@ class InstallTests(unittest.TestCase):
                 {"browser_download_url": f"https://example.invalid/{ASSET}"},
             ],
         }, indent=2))
+        self.releases = self.root / "releases.json"
+        self.releases.write_text(json.dumps([json.loads(self.metadata.read_text())], indent=2))
+        (self.root / "v0.2.1.json").write_text(self.metadata.read_text())
         with zipfile.ZipFile(self.root / "asset.zip", "w") as archive:
             archive.writestr("agent-switch", '#!/bin/sh\nprintf "agent-switch 0.2.1\\n"\n')
         self.tool("uname", 'case "$1" in -s) echo Darwin ;; -m) echo arm64 ;; esac\n')
         self.tool("curl", '''
 fixture_dir=$(dirname "$0")/..
 output=
+url=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) output=$2; shift 2 ;;
-    *) shift ;;
+    *) url=$1; shift ;;
   esac
 done
 if [ -n "$output" ]; then
   [ ! -f "$fixture_dir/fail-download" ] || exit 22
   cp "$fixture_dir/asset.zip" "$output"
 else
-  cat "$fixture_dir/release.json"
+  case "$url" in
+    */releases/latest) cat "$fixture_dir/release.json" ;;
+    */releases/tags/*) cat "$fixture_dir/${url##*/}.json" ;;
+    */releases\?*page=1) cat "$fixture_dir/releases.json" ;;
+    */releases\?*) echo '[]' ;;
+    *) exit 22 ;;
+  esac
 fi
 ''')
 
@@ -75,10 +85,31 @@ fi
 
     def test_missing_platform_has_actionable_error(self):
         self.metadata.write_text(json.dumps({"tag_name": "v0.2.1", "assets": []}, indent=2))
+        self.releases.write_text("[]")
         result = self.run_installer()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("not found in release", result.stderr)
+        self.assertIn("No published package", result.stderr)
         self.assertNotIn("syntax error", result.stderr)
+        self.assertFalse((self.destination / "agent-switch").exists())
+
+    def test_newer_release_for_other_platform_does_not_hide_mac_package(self):
+        self.metadata.write_text(json.dumps({
+            "tag_name": "v0.2.2", "assets": [
+                {"browser_download_url": "https://example.invalid/agent-switch-0.2.2-x86_64-pc-windows-msvc.zip"},
+            ],
+        }, indent=2))
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(ASSET, result.stdout)
+
+    def test_prerelease_package_is_not_installed(self):
+        candidate = json.loads(self.metadata.read_text())
+        candidate["prerelease"] = True
+        self.releases.write_text(json.dumps([candidate], indent=2))
+        (self.root / "v0.2.1.json").write_text(json.dumps(candidate, indent=2))
+        self.metadata.write_text(json.dumps({"tag_name": "v0.2.2", "assets": []}, indent=2))
+        result = self.run_installer()
+        self.assertNotEqual(result.returncode, 0)
         self.assertFalse((self.destination / "agent-switch").exists())
 
     def test_failed_download_preserves_existing_install(self):

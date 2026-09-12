@@ -147,7 +147,7 @@ macOS / Linux：`~/.agent-switch`）。删除程序与该目录即可移除 Agen
 #### 方式 A——一行命令安装（推荐）
 
 脚本会自动从 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
-下载最新版本。Windows 脚本更新用户 PATH 与当前 PowerShell 会话。
+选择包含当前平台安装包的最新正式版本。Windows 脚本更新用户 PATH 与当前 PowerShell 会话。
 macOS/Linux 安装到 `~/.local/bin`；若该目录不在 PATH 中，会向已存在的
 `.bashrc`、`.zshrc` 和 `.profile` 添加配置，并打印当前终端需执行的
 `export` 命令。管道中的脚本无法修改父 shell 的环境。
@@ -164,8 +164,8 @@ irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.
 curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
 ```
 
-> 安装脚本只查询最新 Release。若该版本没有当前平台的安装包，请从较早版本
-> 手动下载，或从源码构建。
+> 各版本可能提供不同平台的安装包。脚本会选择包含当前平台安装包的最新正式版本，
+> 跳过草稿和预发布版本；若没有匹配的安装包，请从源码构建。
 
 发布资产命名规范：`agent-switch-<版本>-<target>.zip`（标准 Rust 目标名）。
 下载前请核对对应 Release 的资产列表。

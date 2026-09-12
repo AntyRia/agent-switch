@@ -159,7 +159,7 @@ and that folder. The underlying CLIs and OS application caches are separate.
 
 #### Option A — One-line install (recommended)
 
-Downloads the latest release from
+Downloads the newest stable release with a package for your platform from
 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and installs
 it. Windows updates both the user PATH and the current PowerShell session.
 On macOS/Linux it installs to `~/.local/bin`. If needed, it adds a PATH entry
@@ -178,8 +178,9 @@ irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.
 curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
 ```
 
-> The installer looks for your platform in the latest release. If that release
-> has no matching package, download one from an earlier release or build from source.
+> Releases can contain different platforms. The installer selects the newest
+> stable release with a matching package; drafts and prereleases are skipped.
+> If no release includes your platform, build from source.
 
 Release asset naming: `agent-switch-<version>-<target>.zip` (standard Rust
 target names). Check the release's asset list before downloading.

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - macOS Apple Silicon GUI (DMG) and CLI (ZIP) packages, with SHA-256 checksums.
+- A tag-triggered macOS release workflow that builds and verifies packages
+  before publishing them to GitHub Releases.
 
 ### Fixed
 
@@ -24,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Recognize Apple Silicon asset names and use POSIX-compatible syntax in the
   Unix installer.
 - Fix the Unix installer's syntax error when piped into macOS `/bin/sh`.
+- Select the newest stable release containing a package for the current
+  platform, so releases for other platforms do not break installation.
 
 ### Documentation
 
