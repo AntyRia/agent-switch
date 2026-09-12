@@ -23,7 +23,9 @@ Write-Host "Finding the latest Windows x64 package from $Repo ..."
 $asset = $null
 $page = 1
 do {
-    $releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100&page=$page" -Headers @{ "User-Agent" = "agent-switch-installer" })
+    # Invoke-RestMethod returns the JSON array as one pipeline object. Assign
+    # it directly so foreach enumerates releases instead of a nested array.
+    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100&page=$page" -Headers @{ "User-Agent" = "agent-switch-installer" }
     foreach ($rel in $releases) {
         if ($rel.draft -or $rel.prerelease) { continue }
         $version = $rel.tag_name -replace '^v', ''
