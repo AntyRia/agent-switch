@@ -9,6 +9,7 @@ desktop/src-tauri/target/
 # Local scratch (smoke tests, test sandboxes)
 .smoke-home/
 *.log
+__pycache__/
 
 # OS / editor cruft
 .DS_Store

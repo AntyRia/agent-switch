@@ -147,8 +147,10 @@ macOS / Linux：`~/.agent-switch`）。删除程序与该目录即可移除 Agen
 #### 方式 A——一行命令安装（推荐）
 
 脚本会自动从 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
-下载最新版本。Windows 脚本配置用户 PATH；macOS/Linux 安装到 `~/.local/bin`，
-该目录不在 PATH 时只打印 `export` 命令，不会修改 shell 启动文件。
+下载最新版本。Windows 脚本更新用户 PATH 与当前 PowerShell 会话。
+macOS/Linux 安装到 `~/.local/bin`；若该目录不在 PATH 中，会向已存在的
+`.bashrc`、`.zshrc` 和 `.profile` 添加配置，并打印当前终端需执行的
+`export` 命令。管道中的脚本无法修改父 shell 的环境。
 
 **Windows**（PowerShell）：
 
