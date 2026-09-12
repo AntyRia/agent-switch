@@ -3,6 +3,11 @@ name: Release macOS
 on:
   push:
     tags: ['v*']
+    branches: [main]
+    paths:
+      - '.github/workflows/release-macos.yml'
+      - 'scripts/install.*'
+      - 'tests/test_install.py'
 
 permissions:
   contents: read
@@ -13,6 +18,7 @@ concurrency:
 
 jobs:
   release:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: macos-15
     timeout-minutes: 40
     permissions:
@@ -116,26 +122,47 @@ jobs:
           fi
           gh release upload "$RELEASE_TAG" "$RUNNER_TEMP/release/"* --clobber
           gh release edit "$RELEASE_TAG" --notes-file "$RUNNER_TEMP/release-notes.md" --draft=false --latest
+  verify-macos-installer:
+    needs: release
+    env:
+      EXPECTED_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test installer response formats and platform selection
+        run: python3 -m unittest discover -s tests -p 'test_install.py'
       - name: Verify public macOS installation
         shell: bash
         run: |
-          # GitHub can take a while to replicate a freshly uploaded release
-          # and its assets to the public API. The installer queries that API,
-          # so retry a few times instead of racing the replication.
+          # Allow GitHub's public API and asset replicas to catch up after publishing.
           ok=0
           for attempt in 1 2 3 4 5 6 7 8; do
-            if curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | AGENT_SWITCH_INSTALL_DIR="$RUNNER_TEMP/install-check" /bin/sh; then
-              ok=1
-              break
+            if OUTPUT=$(curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | AGENT_SWITCH_INSTALL_DIR="$RUNNER_TEMP/install-check" /bin/sh 2>&1); then
+              printf '%s\n' "$OUTPUT"
+              VERSION="$("$RUNNER_TEMP/install-check/agent-switch" --version)"
+              if [ -z "$EXPECTED_TAG" ] || [ "$VERSION" = "agent-switch ${EXPECTED_TAG#v}" ]; then
+                ok=1
+                break
+              fi
             fi
-            echo "Release not replicated yet; retry $((attempt + 1)) in 15s ..."
-            sleep 15
+            [ "$attempt" = 8 ] || sleep 15
           done
-          test "$ok" = 1
-          test "$("$RUNNER_TEMP/install-check/agent-switch" --version)" = "agent-switch ${RELEASE_TAG#v}"
+          if [ "$ok" != 1 ]; then
+            printf '::error::Public installer did not reach the expected release: %s\n' "${OUTPUT//$'\n'/'%0A'}"
+            exit 1
+          fi
+          echo "::notice::Installed $VERSION through the public macOS installer"
 
   verify-windows-installer:
     needs: release
+    if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -147,3 +174,4 @@ jobs:
         run: |
           ./scripts/install.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Output "::notice::Installed $(agent-switch --version) through the Windows installer"
