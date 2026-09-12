@@ -1,4 +1,4 @@
-# Installs the agent-switch CLI from the latest GitHub release (Windows).
+# Installs the newest published CLI package for Windows x64.
 #
 # Usage:
 #   irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.ps1 | iex
@@ -17,15 +17,24 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     throw "Only x86_64 Windows is published so far."
 }
 
-# Fetch the latest release and find our asset in it.
-$api = "https://api.github.com/repos/$Repo/releases/latest"
-Write-Host "Querying latest release of $Repo ..."
-$rel = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "agent-switch-installer" }
-$version = $rel.tag_name -replace '^v', ''
-$AssetName = "agent-switch-$version-x86_64-pc-windows-msvc.zip"
-$asset = $rel.assets | Where-Object { $_.name -eq $AssetName }
+# Releases can contain packages for different platforms. Skip releases that
+# do not have a Windows package, including drafts and prereleases.
+Write-Host "Finding the latest Windows x64 package from $Repo ..."
+$asset = $null
+$page = 1
+do {
+    $releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100&page=$page" -Headers @{ "User-Agent" = "agent-switch-installer" })
+    foreach ($rel in $releases) {
+        if ($rel.draft -or $rel.prerelease) { continue }
+        $version = $rel.tag_name -replace '^v', ''
+        $AssetName = "agent-switch-$version-x86_64-pc-windows-msvc.zip"
+        $asset = $rel.assets | Where-Object { $_.name -eq $AssetName } | Select-Object -First 1
+        if ($asset) { break }
+    }
+    $page++
+} while (-not $asset -and $releases.Count -gt 0)
 if (-not $asset) {
-    throw "Asset '$AssetName' not found in release $($rel.tag_name). Published assets: $($rel.assets.name -join ', ')"
+    throw "No published package for Windows x64. See https://github.com/$Repo/releases or build from source."
 }
 
 $installDir = Join-Path $env:LOCALAPPDATA "agent-switch\bin"

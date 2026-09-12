@@ -50,6 +50,18 @@ Rules of thumb:
   pass with no network access and must never touch the real config root
   (tests set `AGENT_SWITCH_HOME` to a temp dir).
 
+## Releasing macOS packages
+
+Keep the version in the Rust manifests, desktop manifests and changelog in
+sync, then push the corresponding `v<version>` tag. The macOS release workflow
+runs the tests, builds the Apple Silicon CLI and GUI, verifies the app signature
+and DMG, and publishes the two packages plus `SHA256SUMS.txt`. It then checks
+the public macOS installer and Windows package selection. Existing published
+releases are not overwritten; fixes require a new version.
+
+The macOS app uses ad-hoc signing and is not notarized. Release assets contain
+only distributable packages and their checksums.
+
 ## Security invariants (do not break)
 
 These are the project's core promises; CI-style review should reject any
