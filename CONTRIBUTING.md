@@ -57,8 +57,9 @@ change that weakens them:
    profile TOML; use `provider.api_key_env` to keep the secret outside the
    config directory. At launch it is injected as a per-process environment
    variable of the spawned CLI.
-2. The user's global `~/.codex` / `~/.claude` and the parent process's
-   environment are **never modified**.
+2. Agent Switch must not modify the user's global `~/.codex` / `~/.claude`
+   configuration or the parent process's environment. Profile homes isolate
+   configuration and history; they are not filesystem or network sandboxes.
 3. Keys are masked in summaries and cards; the profile editor has an explicit
    reveal control for the person editing that profile.
 4. No database, no proxy server, no global "active provider" state — profiles

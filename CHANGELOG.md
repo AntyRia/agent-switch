@@ -7,14 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-09-12
 
+### Added
+
+- macOS Apple Silicon GUI (DMG) and CLI (ZIP) packages, with SHA-256 checksums.
+
 ### Fixed
 
 - Detect the standard macOS Terminal.app and iTerm.app bundles when selecting
   a terminal for GUI launches.
 - Restrict Unix profile/runtime directories to mode 0700 and profile files to
   mode 0600.
-- Correct the GUI launch modal CSS and align the documentation with the actual
-  macOS release and key storage behavior.
+- Keep API keys out of the terminal command text when launching on macOS.
+- Correct the size and spacing of the GUI launch dialog.
+- Preserve self-hosted provider categories when editing profiles.
+- Use environment-backed API keys for GUI connection tests and model-list requests.
+- Recognize Apple Silicon asset names and use POSIX-compatible syntax in the
+  Unix installer.
+
+### Documentation
+
+- Clarify CLI prerequisites, platform downloads and macOS first-launch steps.
+- Explain profile key storage, configuration isolation and model-sync behavior.
 
 ## [0.1.0] - 2026-09-10
 
