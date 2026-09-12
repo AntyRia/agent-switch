@@ -2,8 +2,7 @@
 
 面向 **Codex CLI**（OpenAI 协议）与 **Claude CLI**（Anthropic 协议）的
 profile 驱动多供应商启动器。每个供应商对应一份小小的 TOML *profile*；
-每次启动都在完全隔离的持久运行环境中进行——绝不会读写你全局的
-`~/.codex` / `~/.claude`。
+每次启动使用该 profile 独立、持久的配置与会话目录，无需修改全局 CLI 配置。
 
 <p align="center">
   <a href="README.md">English</a> | <b>简体中文</b>
@@ -29,13 +28,13 @@ profile 驱动多供应商启动器。每个供应商对应一份小小的 TOML 
 
 ### 要解决的问题
 
-Codex CLI 与 Claude CLI 都**绑定同一份全局配置**（`~/.codex/config.toml`、
-`~/.claude`）：接口地址、API Key、默认模型全部写死在这一个地方。于是：
+Codex CLI 与 Claude CLI 都有默认配置目录（`~/.codex`、`~/.claude`）。
+通过默认配置管理多个供应商时，需要手动维护各组设置：
 
-- **换供应商就得改全局配置。** 换一家中转、换一批模型，都要手工编辑那个
-  同时承载着登录态、插件与会话历史的配置文件——容易改坏，难以回滚。
-- **同一个 CLI 无法同时服务两个供应商。** 全局 home 只有一个：一个终端
-  指向中转 A、另一个指向本地 vLLM 做不到；谁最后改的配置，谁就生效。
+- **切换供应商需要管理成组配置。** 接口地址、凭据和模型需要保持一致，
+  同时避免影响已有登录状态。
+- **并行使用需要独立配置。** 一个终端连接中转、另一个连接本地服务时，
+  需要为每次启动单独管理环境变量或 CLI home。
 
 ### 解决思路
 
@@ -74,9 +73,9 @@ Profile (profiles/<id>.toml)
   默认模型（中转站、自建 vLLM，或厂商官方端点）。
 - **双协议、双 CLI** —— `codex`（OpenAI 协议，GPT 系模型）与 `claude`
   （Anthropic 协议，Claude 系模型）；由 profile 决定启动哪个 CLI。
-- **完全隔离** —— 每个 profile 拥有独立的持久运行环境
-  （`CODEX_HOME` / `CLAUDE_CONFIG_DIR`），绝不读写全局的 `~/.codex` 与
-  `~/.claude`。
+- **配置与历史独立** —— 每个 profile 拥有持久运行环境
+  （`CODEX_HOME` / `CLAUDE_CONFIG_DIR`）。Agent Switch 不修改全局 CLI
+  配置，也不限制底层 CLI 的文件或网络访问。
 - **官方供应商支持** —— profile 可直接指向 OpenAI / Anthropic：使用
   平台 API Key，或运行一次订阅登录（`agent-switch login`），之后由该
   profile 的隔离环境保存账号。
@@ -88,7 +87,7 @@ Profile (profiles/<id>.toml)
   同步失败，旧模型仍可能已被服务端停用。
 - **Key 安全** —— API Key 只以子进程环境变量注入，从不复制到生成的运行时
   配置或启动脚本。直接填写的 `provider.api_key` 仍会保存在 profile TOML；
-  如需密钥不落盘，请使用 `provider.api_key_env`。所有展示位置一律打码。
+  如需密钥不落盘，请使用 `provider.api_key_env`。列表和摘要中打码；编辑器有主动显示密钥的按钮。
 - **CLI + GUI 双形态** —— 单文件命令行工具与双语（中文 / 英文）Tauri
   桌面应用，共用同一套 profile 文件。
 
@@ -116,11 +115,16 @@ Agent Switch 负责驱动官方 CLI 工具，**不内置**这些工具。请按�
 
 **第 2 步——检查环境**：
 
+GUI 用户打开**关于**页检查 CLI 环境；命令行用户运行：
+
 ```bash
 agent-switch doctor      # 检查 Codex / Claude CLI 与配置目录
 ```
 
 **第 3 步——创建 profile 并启动**：
+
+GUI 用户添加 profile、填写供应商配置并保存，然后点击**启动**选择工作区。
+命令行用户运行：
 
 ```bash
 agent-switch add         # 交互式创建：CLI / 供应商 / 接口 / Key / 模型
@@ -135,16 +139,16 @@ agent-switch sessions    # 查看 / 恢复历史会话
 ## 安装
 
 两种形态共用同一个配置根目录（Windows：`%APPDATA%\agent-switch`；
-macOS / Linux：`~/.agent-switch`）——**彻底卸载 = 删程序 + 删该目录，
-不留任何残留。**
+macOS / Linux：`~/.agent-switch`）。删除程序与该目录即可移除 Agent Switch
+及其配置、会话历史；底层 CLI 和系统应用缓存需要分别管理。
 
 ### 1. 纯命令行（不含 GUI）
 
 #### 方式 A——一行命令安装（推荐）
 
 脚本会自动从 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
-下载最新版本并安装到 `~/.local/bin`。如果该目录不在 `PATH` 中，脚本只会打印
-需要执行的 `export` 命令，不会修改 shell 启动文件。
+下载最新版本。Windows 脚本配置用户 PATH；macOS/Linux 安装到 `~/.local/bin`，
+该目录不在 PATH 时只打印 `export` 命令，不会修改 shell 启动文件。
 
 **Windows**（PowerShell）：
 
@@ -158,18 +162,17 @@ irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.
 curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
 ```
 
-> 安装脚本要求 Release 中存在匹配资产，并且 API 请求能够读取仓库。仓库为私有
-> 时，请用带认证的客户端下载资产，或使用本版本的本地安装包；一行命令脚本不会
-> 代替你提供 GitHub 凭据。
+> 安装脚本只查询最新 Release。若该版本没有当前平台的安装包，请从较早版本
+> 手动下载，或从源码构建。
 
 发布资产命名规范：`agent-switch-<版本>-<target>.zip`（标准 Rust 目标名）。
+下载前请核对对应 Release 的资产列表。
 
-| 平台 | 资产名（以 v0.2.1 为例） |
+| 平台 | CLI 安装包 |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.1-x86_64-pc-windows-msvc.zip` |
+| Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip`（[v0.2.0](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0)） |
 | macOS（Apple 芯片） | `agent-switch-0.2.1-aarch64-apple-darwin.zip` |
-| macOS（Intel） | `agent-switch-0.2.1-x86_64-apple-darwin.zip` |
-| Linux x64 | `agent-switch-0.2.1-x86_64-unknown-linux-gnu.zip` |
+| macOS（Intel）/ Linux | 从源码构建 |
 
 习惯手动操作？下载对应 zip 解压后，把 `agent-switch(.exe)` 放到任意
 `PATH` 目录即可。
@@ -197,8 +200,8 @@ cargo install --path crates/agent-switch-cli   # 可选：安装到 PATH
 
 ### 2. GUI 桌面应用
 
-GUI 提供支持的功能（Profile 编辑 / 启动 / 会话池 / 设置 / 日志 /
-连通性测试 / 模型列表），不依赖 `agent-switch` CLI 二进制。底层仍需 npm
+GUI 提供 Profile 编辑、启动、会话池、设置、日志、
+连通性测试与模型列表，不依赖 `agent-switch` CLI 二进制。底层仍需 npm
 安装对应的 Codex / Claude CLI（见[运行前提](#运行前提)）；只有实际检测到可
 执行文件后，GUI 才会显示为可用。
 
@@ -207,21 +210,29 @@ GUI 提供支持的功能（Profile 编辑 / 启动 / 会话池 / 设置 / 日�
 到 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
 下载对应平台的安装包并运行。
 
-| 平台 | 安装包（以 v0.2.1 为例） |
+| 平台 | GUI 安装包 |
 | --- | --- |
-| Windows x64 | `Agent.Switch_0.2.1_x64-setup.exe`（NSIS）/ `Agent.Switch.Setup.0.2.1.x64.msi`（GitHub 资产名中的空格会被替换为点号） |
-| macOS（Apple 芯片） | `Agent.Switch_0.2.1_aarch64.dmg`（本机构建并测试，ad-hoc 未公证） |
+| Windows x64 | 使用 [v0.2.0 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0) |
+| macOS（Apple 芯片） | `Agent.Switch_0.2.1_aarch64.dmg`（ad-hoc 签名，未公证） |
 | macOS（Intel） | 本版本未构建 |
-| Linux | `Agent.Switch_0.2.1_x64.AppImage` / `.deb` / `.rpm` |
+| Linux | 本版本未构建，请从源码构建 |
+
+**macOS 安装**——打开 DMG，将 **Agent Switch** 拖入**应用程序**。
+安装包适用于 Apple 芯片，不包含 Codex 或 Claude，使用前需安装所需的 CLI。
+Terminal 与 iTerm 会自动检测。
+
+应用使用 ad-hoc 签名，尚未通过 Apple 公证。若被 macOS 拦截，请先将下载文件
+的校验和与同一 Release 的 `SHA256SUMS.txt` 核对；确认信任该下载来源后，
+尝试打开应用，再到**系统设置 → 隐私与安全性 → 仍要打开**完成首次启动。
 
 **卸载**——使用系统常规卸载方式（Windows「应用和功能」、macOS 拖出
 应用程序、Linux `apt` / `rpm`）。Profile 仍保留在配置根目录中；删除
-该目录即可彻底清除。
+该目录即可清除 Agent Switch 的配置与会话历史。
 
 #### 方式 B——源码构建
 
 前置条件：[Rust stable](https://rustup.rs)、**Node.js 18+**（Tauri
-前端）、底层 CLI，Linux 另需
+前端）、底层 CLI；macOS 另需 Command Line Tools（`xcode-select --install`），Linux 另需
 [Tauri 系统依赖](https://tauri.app/start/prerequisites/)。
 
 ```bash
@@ -330,9 +341,9 @@ Key 环境变量，互不干扰。
 - **Profile 编辑器** —— 选择 CLI / 协议（Codex / OpenAI 或 Claude /
   Anthropic）、供应商类别（中转 / 自建 OpenAI 兼容 / 官方）；Claude
   profile 还可选择 Key 方式（Bearer / x-api-key）。official profile 的
-  厂商端点固定，API Key 可选。模型字段旁的 *拉取模型列表* 会与服务端
-  **严格同步** *模型列表*（上游已下线的模型被移除、新模型被加入、
-  默认模型始终保留）；启动时该列表写入模型目录，TUI 中可用 `/model`
+  厂商端点固定，API Key 可选。模型字段旁的 *拉取模型列表* 在获取成功后
+  刷新 *模型列表*（移除旧模型、加入新模型，并保留默认模型）；获取失败时
+  保留原列表。启动时该列表写入模型目录，TUI 中可用 `/model`
   切换。新建 profile 的 ID 为自动生成的 UUID，仅供内部使用——不在界面
   中展示，也不可编辑。
 - **会话池** —— 跨所有 profile 的全部可恢复会话，按时间倒序，每行带
@@ -458,8 +469,9 @@ claude 的官方配置：`type = "official"`、
   串）。旧值 `openai-compatible` / `openai` 仍被接受。
 - `provider.base_url` —— codex：OpenAI 兼容根地址（通常以 `/v1` 结尾）；
   claude：Anthropic 服务端根地址（通常**不带** `/v1`）。
-- `provider.api_key` —— Key，启动时以子进程环境变量注入。从不写入任何
-  运行时配置或启动脚本。
+- `provider.api_key` —— Key，保存在 profile TOML 中，启动时以子进程
+  环境变量注入，不复制到生成的运行时配置或启动脚本。如需密钥保存在
+  Agent Switch 配置目录之外，请使用 `provider.api_key_env`。
 - `provider.api_key_env` —— 可选：持有 Key 的环境变量名。该变量已设置
   且非空时，优先于 `api_key`。
 - `provider.auth_mode` —— 仅 claude：`"auth_token"`（Bearer，默认）或
@@ -489,7 +501,8 @@ claude 的官方配置：`type = "official"`、
   记录与 Codex rollout 都存放在其中，会话池（`agent-switch sessions` /
   GUI 的会话页）列出它们并在同一隔离环境中恢复。
 - 启动 CLI 时把 `CODEX_HOME`（codex）或 `CLAUDE_CONFIG_DIR`（claude）
-  指向该私有目录，因此它绝不会读写你的全局 `~/.codex` / `~/.claude`。
+  指向该 profile 的目录。Agent Switch 不修改全局 CLI 配置；工作区文件、
+  插件及底层 CLI 自身的文件与网络访问仍由该 CLI 的设置控制。
 - claude profile 的启动还会设置 `ANTHROPIC_BASE_URL`、`ANTHROPIC_MODEL`
   与 `ANTHROPIC_SMALL_FAST_MODEL`（固定为同一模型，避免中转站没有
   haiku 时后台请求失败）。
@@ -522,13 +535,17 @@ claude 的官方配置：`type = "official"`、
 - **连通性测试失败** —— 检查 `provider.base_url`（codex 通常以 `/v1`
   结尾，claude 通常不带）、API Key，以及该模型 id 是否在服务端存在
   （`agent-switch models <id>`）。
+- **能列出模型但无法对话** —— `/models` 请求成功不代表推理可用。
+  Codex profile 需要 Responses API，Claude profile 需要 Anthropic
+  Messages；仅支持 Chat Completions 的服务不足以使用。请检查所选模型
+  的可用状态与供应商返回的错误信息。
 - **其他问题** —— `agent-switch logs` 可查看应用日志的最后若干行（GUI
   的设置页有同样的日志尾部），`agent-switch doctor` 可随时复检环境。
 
 ## 开发
 
-- **沙箱隔离** —— 设置 `AGENT_SWITCH_HOME` 可让 CLI 与 GUI 指向不同的
-  配置根目录；目录之外的一切都不会被触碰：
+- **独立开发数据** —— 设置 `AGENT_SWITCH_HOME` 可让 CLI 与 GUI 指向不同的
+  配置根目录；这隔离的是 Agent Switch 数据，不是底层 CLI 的文件或网络访问权限：
 
   ```bash
   export AGENT_SWITCH_HOME=/tmp/agent-switch-test   # Unix
@@ -542,17 +559,6 @@ claude 的官方配置：`type = "official"`、
   npm install
   npm run tauri dev
   ```
-
-### macOS 发布说明
-
-- Apple 芯片构建目标为 `aarch64-apple-darwin`；Intel 需要单独构建
-  `x86_64-apple-darwin`。
-- 本地安装包使用 ad-hoc 签名，未进行 Apple 公证。首次启动若被 Gatekeeper
-  拦截，请在核对校验和后通过 Finder 的“打开”执行一次。
-- macOS Terminal 与 iTerm 会从应用程序包路径自动检测；自定义终端路径必须
-  对应受支持的终端配方。
-- 安装包不包含 Codex 或 Claude。创建或启动对应 profile 前，必须先全局安装
-  所需的 npm CLI。
 
 ## 参与贡献
 

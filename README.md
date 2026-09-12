@@ -2,8 +2,8 @@
 
 A profile-driven, multi-provider launcher for **Codex CLI** (OpenAI protocol)
 and **Claude CLI** (Anthropic protocol). Each provider is one small TOML
-*profile*; every launch runs in a fully isolated, persistent runtime — your
-global `~/.codex` / `~/.claude` are never read or written.
+*profile*; every launch uses a persistent configuration and session directory
+for that profile, without changing your global CLI configuration.
 
 <p align="center">
   <b>English</b> | <a href="README.zh.md">简体中文</a>
@@ -29,16 +29,15 @@ global `~/.codex` / `~/.claude` are never read or written.
 
 ### The problem
 
-Codex CLI and Claude CLI are both **bound to a single global configuration**
-(`~/.codex/config.toml`, `~/.claude`): the endpoint, the API key and the
-default model all live in that one place. As a result:
+Codex CLI and Claude CLI use a default configuration directory
+(`~/.codex`, `~/.claude`). Managing several providers through that default
+configuration can be cumbersome:
 
-- **Switching providers means editing the global config.** A new relay or a new
-  model means hand-editing a file that also holds your login state, plugins and
-  session history — easy to break, hard to roll back.
-- **The same CLI cannot serve two providers at once.** There is only one global
-  home: pointing one terminal at relay A and another at a local vLLM server is
-  impossible; whoever edited the config last wins.
+- **Switching providers requires managing settings.** Endpoint, credentials
+  and model must stay consistent without disturbing existing login state.
+- **Parallel providers need separate configuration.** Running a relay in one
+  terminal and a local server in another requires managing environment
+  variables or separate CLI homes for each launch.
 
 ### The idea
 
@@ -81,9 +80,9 @@ Each profile owns a **persistent** isolated home, so:
 - **Both protocols, both CLIs** — `codex` (OpenAI protocol, GPT-family models)
   and `claude` (Anthropic protocol, Claude-family models); the profile decides
   which CLI is launched.
-- **Fully isolated** — each profile owns a persistent runtime
-  (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`); your global `~/.codex` and
-  `~/.claude` are never read or written.
+- **Separate configuration and history** — each profile owns a persistent
+  runtime (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`). Agent Switch does not edit
+  your global CLI configuration; it does not sandbox the CLI's file or network access.
 - **Official vendor support** — point a profile at OpenAI / Anthropic
   directly: use a Platform API key, or run a subscription login
   (`agent-switch login`) once and let the isolated home keep the account.
@@ -99,7 +98,7 @@ Each profile owns a **persistent** isolated home, so:
   variable and is never copied into generated runtime config files or start
   scripts. If `provider.api_key` is used, the profile TOML necessarily stores
   that value; use `provider.api_key_env` when the key must remain outside the
-  Agent Switch config directory. Keys are masked everywhere they are displayed.
+  Agent Switch config directory. Summaries mask keys; the editor has an explicit reveal control.
 - **CLI + GUI** — a single-file command-line tool and a bilingual
   (Chinese / English) Tauri desktop app that share the same profile files.
 
@@ -128,11 +127,16 @@ A three-step path from install to first conversation.
 
 **Step 2 — Check the environment**:
 
+In the GUI, open **About** and check the CLI environment. For the command line:
+
 ```bash
 agent-switch doctor      # Codex / Claude CLI + config directories
 ```
 
 **Step 3 — Create a profile and launch**:
+
+In the GUI, add a profile, fill in its provider settings, save it, then click
+**Launch** and select a workspace. For the command line:
 
 ```bash
 agent-switch add         # interactive: CLI / provider / endpoint / key / model
@@ -148,8 +152,8 @@ agent-switch sessions    # list / resume past conversations
 ## Installation
 
 Both forms share one config root (Windows: `%APPDATA%\agent-switch`;
-macOS / Linux: `~/.agent-switch`) — **to fully uninstall, delete the program
-and that folder; nothing else is left behind.**
+macOS / Linux: `~/.agent-switch`) — to remove Agent Switch profiles and history, delete the program
+and that folder. The underlying CLIs and OS application caches are separate.
 
 ### 1. CLI only (no GUI)
 
@@ -157,8 +161,9 @@ and that folder; nothing else is left behind.**
 
 Downloads the latest release from
 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and installs
-it to `~/.local/bin`. If that directory is not already on `PATH`, the script
-prints the export command; it does not edit shell startup files.
+it. Windows configures the user PATH. On macOS/Linux it installs to
+`~/.local/bin` and prints a PATH export command if needed; it does not edit
+shell startup files.
 
 **Windows** (PowerShell):
 
@@ -172,20 +177,17 @@ irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.
 curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
 ```
 
-> The installer requires a matching release asset and an API request that can
-> read this repository. For a private repository, download an asset with an
-> authenticated client or use the local package from this release; the
-> one-line script cannot supply GitHub credentials.
+> The installer looks for your platform in the latest release. If that release
+> has no matching package, download one from an earlier release or build from source.
 
 Release asset naming: `agent-switch-<version>-<target>.zip` (standard Rust
-target names).
+target names). Check the release's asset list before downloading.
 
-| Platform | Asset name (v0.2.1 as an example) |
+| Platform | CLI package |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.1-x86_64-pc-windows-msvc.zip` |
+| Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip` ([v0.2.0](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0)) |
 | macOS (Apple Silicon) | `agent-switch-0.2.1-aarch64-apple-darwin.zip` |
-| macOS (Intel) | `agent-switch-0.2.1-x86_64-apple-darwin.zip` |
-| Linux x64 | `agent-switch-0.2.1-x86_64-unknown-linux-gnu.zip` |
+| macOS (Intel) / Linux | Build from source |
 
 Prefer to do it by hand? Download the matching zip, unzip it, and put
 `agent-switch(.exe)` anywhere on your `PATH`.
@@ -213,8 +215,8 @@ cargo install --path crates/agent-switch-cli   # optional: onto your PATH
 
 ### 2. GUI desktop app
 
-The GUI ships the supported feature set (profile editor / launch / session
-pool / settings / logs / connection test / model list) — the `agent-switch`
+The GUI includes profile editing, launch, session
+management, settings, logs, connection tests and model lists. The `agent-switch`
 CLI binary is not required. You still need the underlying Codex / Claude
 CLI(s) from npm (see [Requirements](#requirements)); the GUI only reports them
 as available after a real executable check.
@@ -225,21 +227,32 @@ Download the installer for your platform from
 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and run
 it.
 
-| Platform | Installer (v0.2.1 as an example) |
+| Platform | GUI package |
 | --- | --- |
-| Windows x64 | `Agent.Switch_0.2.1_x64-setup.exe` (NSIS) / `Agent.Switch.Setup.0.2.1.x64.msi` (GitHub replaces spaces in asset names with dots) |
-| macOS (Apple Silicon) | `Agent.Switch_0.2.1_aarch64.dmg` (locally built and tested; unsigned ad-hoc package) |
+| Windows x64 | Use the [v0.2.0 Windows installers](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0) |
+| macOS (Apple Silicon) | `Agent.Switch_0.2.1_aarch64.dmg` (ad-hoc signed, not notarized) |
 | macOS (Intel) | Not built by this release |
-| Linux | `Agent.Switch_0.2.1_x64.AppImage` / `.deb` / `.rpm` |
+| Linux | Not built by this release; build from source |
+
+**macOS installation** — open the DMG and drag **Agent Switch** to
+**Applications**. The package is for Apple Silicon and does not include Codex
+or Claude; install the required CLI first. Terminal and iTerm are detected
+automatically.
+
+The app is ad-hoc signed and has not been notarized by Apple. If macOS blocks
+it, verify the download's checksum against `SHA256SUMS.txt` from the same
+release, attempt to open the app, then use **System Settings → Privacy &
+Security → Open Anyway** if you trust the download.
 
 **Uninstall** — the normal way for your OS (Add or Remove Programs on Windows,
 drag out of Applications on macOS, `apt` / `rpm` on Linux). Profiles remain in
-the config root; delete that folder to remove everything.
+the config root; delete that folder to remove Agent Switch profiles and session history.
 
 #### Option B — Build from source
 
 Prerequisites: [Rust stable](https://rustup.rs), **Node.js 18+** (Tauri
-frontend), the underlying CLI(s), and — on Linux — the
+frontend), the underlying CLI(s), macOS Command Line Tools (`xcode-select --install`),
+and — on Linux — the
 [Tauri system dependencies](https://tauri.app/start/prerequisites/).
 
 ```bash
@@ -529,8 +542,9 @@ codex / claude) live in [`examples/`](examples/).
   session pool (`agent-switch sessions` / the GUI's Sessions page) lists them
   and resumes them in the same isolated home.
 - The CLI is started with `CODEX_HOME` (codex) or `CLAUDE_CONFIG_DIR`
-  (claude) pointing at that private directory, so it never reads or writes
-  your global `~/.codex` / `~/.claude`.
+  (claude) pointing at that profile's directory. Agent Switch does not edit
+  the global CLI configuration. Workspace files, plugins and the underlying
+  CLI's own file and network access remain subject to that CLI's settings.
 - For claude profiles the launch also sets `ANTHROPIC_BASE_URL`,
   `ANTHROPIC_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL` (pinned to the same
   model, so relays without a haiku do not break background requests).
@@ -568,14 +582,20 @@ codex / claude) live in [`examples/`](examples/).
 - **Connection test fails** — check `provider.base_url` (codex usually ends
   in `/v1`, claude usually does not), the API key, and whether the model id
   exists on that server (`agent-switch models <id>`).
+- **Models are listed, but conversations fail** — a successful `/models`
+  request does not prove that inference works. Codex profiles require the
+  Responses API; Claude profiles require Anthropic Messages. A server that
+  only implements Chat Completions is insufficient. Check the selected
+  model's availability and the provider's error response.
 - **Something else** — `agent-switch logs` shows the last lines of the app
   log (the GUI's Settings page has the same tail), and
   `agent-switch doctor` re-checks the environment.
 
 ## Development
 
-- **Sandboxing** — set `AGENT_SWITCH_HOME` to point the CLI and GUI at a
-  different config root; nothing outside it is ever touched:
+- **Separate development data** — set `AGENT_SWITCH_HOME` to point the CLI and GUI at a
+  different config root. This isolates Agent Switch data, not filesystem or network
+  access of the underlying CLIs:
 
   ```bash
   export AGENT_SWITCH_HOME=/tmp/agent-switch-test   # Unix
@@ -589,18 +609,6 @@ codex / claude) live in [`examples/`](examples/).
   npm install
   npm run tauri dev
   ```
-
-### macOS release notes
-
-- The Apple Silicon build targets `aarch64-apple-darwin`; Intel requires a
-  separate `x86_64-apple-darwin` build.
-- The local package is ad-hoc signed and not notarized. Gatekeeper may block a
-  first launch; use Finder's **Open** action once or remove the quarantine
-  attribute after verifying the checksum.
-- macOS Terminal and iTerm are detected from their application bundles. A
-  custom terminal path must name a supported terminal recipe.
-- The release package does not bundle Codex or Claude. Install the required npm
-  CLI globally before creating or launching a matching profile.
 
 ## Contributing
 
