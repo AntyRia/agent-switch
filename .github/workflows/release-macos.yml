@@ -52,13 +52,29 @@ jobs:
       - name: Verify and package
         shell: bash
         run: |
+          verify() {
+            local output
+            if output=$("$@" 2>&1); then
+              printf '%s\n' "$output"
+            else
+              output="${output//'%'/'%25'}"
+              output="${output//$'\n'/'%0A'}"
+              output="${output//$'\r'/'%0D'}"
+              printf '::error title=Package verification::%s: %s\n' "$1" "$output"
+              return 1
+            fi
+          }
           VERSION="${RELEASE_TAG#v}"
           OUT="$RUNNER_TEMP/release"
           mkdir -p "$OUT"
-          codesign --verify --deep --strict 'desktop/src-tauri/target/release/bundle/macos/Agent Switch.app'
-          cp "desktop/src-tauri/target/release/bundle/dmg/Agent Switch_${VERSION}_aarch64.dmg" "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
-          hdiutil verify "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
-          file target/release/agent-switch | grep -q arm64
+          verify codesign --verify --deep --strict 'desktop/src-tauri/target/release/bundle/macos/Agent Switch.app'
+          verify cp "desktop/src-tauri/target/release/bundle/dmg/Agent Switch_${VERSION}_aarch64.dmg" "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
+          verify hdiutil verify "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
+          ARCH="$(lipo -archs target/release/agent-switch)"
+          if [ "$ARCH" != arm64 ]; then
+            echo "::error::Expected an arm64 CLI, found $ARCH"
+            exit 1
+          fi
           zip -j "$OUT/agent-switch-${VERSION}-aarch64-apple-darwin.zip" target/release/agent-switch
           cd "$OUT"
           shasum -a 256 "Agent.Switch_${VERSION}_aarch64.dmg" "agent-switch-${VERSION}-aarch64-apple-darwin.zip" > SHA256SUMS.txt
