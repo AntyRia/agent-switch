@@ -19,6 +19,8 @@ jobs:
       contents: write
     env:
       CARGO_BUILD_JOBS: '2'
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      RUST_TARGET: aarch64-apple-darwin
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
@@ -36,19 +38,20 @@ jobs:
           test "${RELEASE_TAG#v}" = "$(node -p 'require("./desktop/package.json").version')"
           rustup toolchain install stable --profile minimal
           rustup default stable
+          rustup target add "$RUST_TARGET"
       - name: Test and build CLI
         shell: bash
         run: |
           python3 -m unittest discover -s tests -p 'test_install.py'
-          cargo test --locked
-          cargo build --locked --release
-          test "$(target/release/agent-switch --version)" = "agent-switch ${RELEASE_TAG#v}"
+          cargo test --locked --target "$RUST_TARGET"
+          cargo build --locked --release --target "$RUST_TARGET"
+          test "$("$CARGO_TARGET_DIR/$RUST_TARGET/release/agent-switch" --version)" = "agent-switch ${RELEASE_TAG#v}"
       - name: Build GUI
         working-directory: desktop
         run: |
           npm ci
           npx tsc --noEmit
-          npm run tauri build -- --bundles dmg --ci -- --locked
+          npm run tauri build -- --target "$RUST_TARGET" --bundles dmg --ci -- --locked
       - name: Verify and package
         shell: bash
         run: |
@@ -66,16 +69,23 @@ jobs:
           }
           VERSION="${RELEASE_TAG#v}"
           OUT="$RUNNER_TEMP/release"
+          BUILD="$CARGO_TARGET_DIR/$RUST_TARGET/release"
           mkdir -p "$OUT"
-          verify codesign --verify --deep --strict 'desktop/src-tauri/target/release/bundle/macos/Agent Switch.app'
-          verify cp "desktop/src-tauri/target/release/bundle/dmg/Agent Switch_${VERSION}_aarch64.dmg" "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
+          verify cp "$BUILD/bundle/dmg/Agent Switch_${VERSION}_aarch64.dmg" "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
           verify hdiutil verify "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
-          ARCH="$(lipo -archs target/release/agent-switch)"
+          MOUNT="$RUNNER_TEMP/dmg-check"
+          mkdir -p "$MOUNT"
+          verify hdiutil attach -readonly -nobrowse -mountpoint "$MOUNT" "$OUT/Agent.Switch_${VERSION}_aarch64.dmg"
+          trap 'hdiutil detach "$MOUNT" -quiet || true' EXIT
+          verify codesign --verify --deep --strict "$MOUNT/Agent Switch.app"
+          verify hdiutil detach "$MOUNT"
+          trap - EXIT
+          ARCH="$(lipo -archs "$BUILD/agent-switch")"
           if [ "$ARCH" != arm64 ]; then
             echo "::error::Expected an arm64 CLI, found $ARCH"
             exit 1
           fi
-          zip -j "$OUT/agent-switch-${VERSION}-aarch64-apple-darwin.zip" target/release/agent-switch
+          zip -j "$OUT/agent-switch-${VERSION}-aarch64-apple-darwin.zip" "$BUILD/agent-switch"
           cd "$OUT"
           shasum -a 256 "Agent.Switch_${VERSION}_aarch64.dmg" "agent-switch-${VERSION}-aarch64-apple-darwin.zip" > SHA256SUMS.txt
           shasum -a 256 -c SHA256SUMS.txt
