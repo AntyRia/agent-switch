@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-12
+
+### Fixed
+
+- Parse GitHub release metadata as JSON, so both compact and formatted
+  responses work with the macOS/Linux installer.
+
+### Documentation
+
+- Document the Node.js prerequisite for the macOS/Linux install script.
+
 ## [0.2.1] - 2026-09-12
 
 ### Added

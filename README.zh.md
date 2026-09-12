@@ -146,6 +146,9 @@ macOS / Linux：`~/.agent-switch`）。删除程序与该目录即可移除 Agen
 
 #### 方式 A——一行命令安装（推荐）
 
+macOS/Linux 安装脚本需要 [Node.js](https://nodejs.org) 解析 GitHub 发行信息。
+也可以直接下载 CLI ZIP 手动安装。
+
 脚本会自动从 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
 选择包含当前平台安装包的最新正式版本。Windows 脚本更新用户 PATH 与当前 PowerShell 会话。
 macOS/Linux 安装到 `~/.local/bin`；若该目录不在 PATH 中，会向已存在的
@@ -173,7 +176,7 @@ curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/i
 | 平台 | CLI 安装包 |
 | --- | --- |
 | Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip`（[v0.2.0](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0)） |
-| macOS（Apple 芯片） | `agent-switch-0.2.1-aarch64-apple-darwin.zip` |
+| macOS（Apple 芯片） | `agent-switch-0.2.2-aarch64-apple-darwin.zip` |
 | macOS（Intel）/ Linux | 从源码构建 |
 
 习惯手动操作？下载对应 zip 解压后，把 `agent-switch(.exe)` 放到任意
@@ -215,7 +218,7 @@ GUI 提供 Profile 编辑、启动、会话池、设置、日志、
 | 平台 | GUI 安装包 |
 | --- | --- |
 | Windows x64 | 使用 [v0.2.0 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0) |
-| macOS（Apple 芯片） | `Agent.Switch_0.2.1_aarch64.dmg`（ad-hoc 签名，未公证） |
+| macOS（Apple 芯片） | `Agent.Switch_0.2.2_aarch64.dmg`（ad-hoc 签名，未公证） |
 | macOS（Intel） | 本版本未构建 |
 | Linux | 本版本未构建，请从源码构建 |
 
