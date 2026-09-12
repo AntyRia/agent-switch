@@ -175,7 +175,7 @@ curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/i
 
 | 平台 | CLI 安装包 |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip`（[v0.2.0](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0)） |
+| Windows x64 | `agent-switch-0.2.2-x86_64-pc-windows-msvc.zip`（[v0.2.2](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.2)） |
 | macOS（Apple 芯片） | `agent-switch-0.2.2-aarch64-apple-darwin.zip` |
 | macOS（Intel）/ Linux | 从源码构建 |
 
@@ -217,7 +217,7 @@ GUI 提供 Profile 编辑、启动、会话池、设置、日志、
 
 | 平台 | GUI 安装包 |
 | --- | --- |
-| Windows x64 | 使用 [v0.2.0 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.0) |
+| Windows x64 | 使用 [v0.2.2 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.2) |
 | macOS（Apple 芯片） | `Agent.Switch_0.2.2_aarch64.dmg`（ad-hoc 签名，未公证） |
 | macOS（Intel） | 本版本未构建 |
 | Linux | 本版本未构建，请从源码构建 |
