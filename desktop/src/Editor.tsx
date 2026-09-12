@@ -100,6 +100,7 @@ function parseModelList(s: string): string[] {
  *  passes through; a local base URL (localhost / 127.0.0.1) is assumed to
  *  be a self-hosted (vllm) deployment. */
 function mapProviderType(type: string, baseUrl: string): string {
+  if (type === "openai-compatible") return "vllm";
   if (type === "relay" || type === "vllm" || type === "official") return type;
   const local = /^https?:\/\/(localhost|127\.0\.0\.1)/.test(baseUrl);
   return local ? "vllm" : "relay";
@@ -192,6 +193,7 @@ export default function Editor({ id, onBack, onSaved }: EditorProps) {
       const r: ModelListResult = await api.fetchModels({
         base_url: effectiveBaseUrl,
         api_key: form.api_key,
+        api_key_env: form.api_key_env,
         engine: form.cli,
         auth_mode: form.cli === "claude" ? form.auth_mode : null,
         provider_type: form.provider_type,
@@ -260,6 +262,7 @@ export default function Editor({ id, onBack, onSaved }: EditorProps) {
       const r: TestResult = await api.testConnection({
         base_url: effectiveBaseUrl,
         api_key: form.api_key,
+        api_key_env: form.api_key_env,
         model: form.model.trim(),
         engine: form.cli,
         auth_mode: form.cli === "claude" ? form.auth_mode : null,

@@ -425,7 +425,7 @@ fn write_start_script(
         std::fs::write(&path, s)?;
         Ok(path)
     } else {
-        let mut s = String::new();
+        let mut s = String::from("#!/bin/sh\n");
         for (k, v) in env {
             s.push_str(&format!("export {k}='{}'\n", sh_quote(v)));
         }
@@ -809,7 +809,7 @@ mod tests {
             prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(content.contains("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"));
-        assert!(content.contains("= '1'") || content.contains("=1"));
+        assert!(content.contains("= '1'") || content.contains("='1'") || content.contains("=1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

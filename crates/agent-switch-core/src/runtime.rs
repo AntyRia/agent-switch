@@ -208,7 +208,7 @@ mod tests {
         }
         #[cfg(not(windows))]
         {
-            File::options().read(true).write(true).open(path)
+            File::open(path)
         }
     }
 

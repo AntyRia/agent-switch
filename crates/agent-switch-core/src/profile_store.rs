@@ -41,6 +41,12 @@ impl ProfileStore {
     pub fn init(&self) -> Result<()> {
         fs::create_dir_all(self.profiles_dir())?;
         fs::create_dir_all(self.runtime_dir())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&self.profiles_dir(), fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(&self.runtime_dir(), fs::Permissions::from_mode(0o700))?;
+        }
         Ok(())
     }
 
@@ -123,6 +129,11 @@ impl ProfileStore {
         let path = self.path_for(&profile.id);
         let tmp = path.with_extension("toml.tmp");
         fs::write(&tmp, profile.to_toml())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
+        }
         fs::rename(&tmp, &path)?;
         Ok(path)
     }

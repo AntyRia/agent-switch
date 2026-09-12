@@ -168,6 +168,8 @@ pub struct TestInput {
     #[serde(default)]
     pub api_key: String,
     #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
     pub model: String,
     /// "codex" (OpenAI /models) or "claude" (Anthropic /v1/messages);
     /// absent from older frontends → codex.
@@ -194,6 +196,8 @@ pub struct ModelsInput {
     pub base_url: String,
     #[serde(default)]
     pub api_key: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
     #[serde(default)]
     pub engine: String,
     #[serde(default)]
@@ -465,17 +469,22 @@ pub async fn delete_profile(id: String) -> Result<IdOut, String> {
     Ok(IdOut { id })
 }
 
+fn resolve_editor_key(literal: &str, env_name: Option<&str>) -> String {
+    env_name.and_then(|name| std::env::var(name).ok()).filter(|v| !v.is_empty()).unwrap_or_else(|| literal.to_string())
+}
+
 /// Health-check the GIVEN fields (not a stored profile). The engine picks
 /// the wire protocol: codex → GET <base_url>/models, claude → POST
 /// <base_url>/v1/messages with a 1-token request.
 #[tauri::command]
 pub async fn test_connection(t: TestInput) -> Result<TestOut, String> {
+    let key = resolve_editor_key(&t.api_key, t.api_key_env.as_deref());
     let engine = Engine::parse(&t.engine);
     let official = t.provider_type.trim().eq_ignore_ascii_case("official");
     let r = health::test_engine(
         engine,
         &t.base_url,
-        &t.api_key,
+        &key,
         &t.model,
         t.auth_mode.as_deref(),
         official,
@@ -493,6 +502,7 @@ pub async fn test_connection(t: TestInput) -> Result<TestOut, String> {
 /// (each falls back to the other URL convention).
 #[tauri::command]
 pub async fn fetch_models(m: ModelsInput) -> Result<ModelsOut, String> {
+    let key = resolve_editor_key(&m.api_key, m.api_key_env.as_deref());
     let engine = Engine::parse(&m.engine);
     // Official claude always speaks the vendor's x-api-key convention.
     let auth_mode = if m
@@ -507,7 +517,7 @@ pub async fn fetch_models(m: ModelsInput) -> Result<ModelsOut, String> {
     let r = agent_switch_core::models::fetch_models(
         engine,
         &m.base_url,
-        &m.api_key,
+        &key,
         auth_mode,
     )
     .map_err(|e| e.to_string())?;

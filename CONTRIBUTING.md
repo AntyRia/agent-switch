@@ -52,12 +52,15 @@ Rules of thumb:
 These are the project's core promises; CI-style review should reject any
 change that weakens them:
 
-1. The API key is **never written** into generated Codex `config.toml` files,
-   start scripts, or any other on-disk artifact. It is injected only as a
-   per-process environment variable of the spawned CLI.
+1. The API key is **never written** into generated Codex `config.toml` files or
+   start scripts. A literal `provider.api_key` is intentionally stored in the
+   profile TOML; use `provider.api_key_env` to keep the secret outside the
+   config directory. At launch it is injected as a per-process environment
+   variable of the spawned CLI.
 2. The user's global `~/.codex` / `~/.claude` and the parent process's
    environment are **never modified**.
-3. Keys are **masked** in every display surface (`show`, GUI cards, About).
+3. Keys are masked in summaries and cards; the profile editor has an explicit
+   reveal control for the person editing that profile.
 4. No database, no proxy server, no global "active provider" state — profiles
    are plain TOML files, the runtime homes are plain directories.
 

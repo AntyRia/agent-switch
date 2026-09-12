@@ -21,7 +21,7 @@ const EN = {
   navAbout: "About",
   // About page
   aboutDesc:
-    "Launch Codex / Claude in isolated per-profile runtimes: independent routing, resumable sessions, and API keys that never touch disk.",
+    "Launch Codex / Claude in isolated per-profile runtimes: independent routing, resumable sessions, and keys kept out of generated runtime files.",
   aboutCliTitle: "CLI environment",
   aboutRecheck: "Re-check",
   aboutInstalled: "installed",
@@ -239,7 +239,7 @@ const ZH: Record<TKey, string> = {
   navAbout: "关于",
   // About page
   aboutDesc:
-    "以独立的隔离环境启动 Codex / Claude：路由互相独立、会话可恢复、API 密钥绝不落盘。",
+    "以独立的隔离环境启动 Codex / Claude：路由互相独立、会话可恢复，密钥不会写入生成的运行时文件。",
   aboutCliTitle: "CLI 环境",
   aboutRecheck: "重新检测",
   aboutInstalled: "已安装",

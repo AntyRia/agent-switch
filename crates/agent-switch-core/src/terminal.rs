@@ -9,8 +9,9 @@
 //!
 //! Secret env pairs (the per-launch API key) never touch the start script
 //! on disk (spec §9): on Windows they are set on the terminal process
-//! environment; on macOS/Linux they are exported inline in the launch
-//! shell command / AppleScript payload (in-memory only).
+//! environment; on macOS a private, one-shot Unix socket passes them to
+//! the shell without putting secrets in AppleScript or terminal history.
+//! Linux terminal recipes currently use inline environment assignments.
 
 use std::path::Path;
 
@@ -71,11 +72,37 @@ fn candidates() -> Vec<(&'static str, &'static str)> {
     }
 }
 
+/// macOS terminal apps are not normally exposed as binaries on PATH. Keep
+/// the recipe names stable while probing their standard application bundles.
+fn macos_app_path(bin: &str) -> Option<&'static str> {
+    match bin {
+        "terminal" => [
+            "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+            "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal",
+        ]
+        .into_iter()
+        .find(|p| Path::new(p).exists()),
+        "iterm2" => [
+            "/Applications/iTerm.app/Contents/MacOS/iTerm2",
+            "/System/Applications/iTerm.app/Contents/MacOS/iTerm2",
+        ]
+        .into_iter()
+        .find(|p| Path::new(p).exists()),
+        _ => None,
+    }
+}
+
 /// All known terminals found on this machine, in preference order.
 pub fn detect_terminals() -> Vec<TerminalInfo> {
     let mut out = Vec::new();
     for (bin, label) in candidates() {
-        if let Ok(path) = which::which(bin) {
+        let path = if cfg!(target_os = "macos") {
+            macos_app_path(bin).map(Path::new).map(Path::to_path_buf)
+        } else {
+            None
+        }
+        .or_else(|| which::which(bin).ok());
+        if let Some(path) = path {
             out.push(TerminalInfo {
                 label: label.to_string(),
                 bin: bin.to_string(),
@@ -91,18 +118,23 @@ pub fn detect_terminals() -> Vec<TerminalInfo> {
 pub fn resolve_custom(path: &str) -> Option<TerminalInfo> {
     let p = Path::new(path);
     let file_name = p.file_name()?.to_str()?.to_string();
-    let lower = if cfg!(windows) {
+    let lower = if cfg!(windows) || cfg!(target_os = "macos") {
         file_name.to_ascii_lowercase()
     } else {
         file_name.clone()
     };
-    let stem = match p.extension().and_then(|e| e.to_str()) {
+    let mut stem = match p.extension().and_then(|e| e.to_str()) {
         Some(ext) if lower.ends_with(&format!(".{}", ext.to_ascii_lowercase())) => {
             lower[..lower.len() - ext.len() - 1].to_string()
         }
         _ => lower,
     };
-    let (bin, label) = candidates().into_iter().find(|(b, _)| *b == stem)?;
+    if cfg!(target_os = "macos") && stem == "iterm" {
+        stem = "iterm2".into();
+    }
+    let (bin, label) = candidates().into_iter().find(|(b, _)| {
+        *b == stem || (cfg!(target_os = "macos") && b.eq_ignore_ascii_case(&stem))
+    })?;
     Some(TerminalInfo {
         label: label.to_string(),
         bin: bin.to_string(),
@@ -151,10 +183,7 @@ pub fn open_in_terminal(
                 })
             }
             Err(e) => {
-                crate::logging::warn(&format!(
-                    "terminal '{}' failed to start: {e}",
-                    info.label
-                ));
+                crate::logging::warn(&format!("terminal '{}' failed to start: {e}", info.label));
             }
         }
     }
@@ -165,7 +194,12 @@ pub fn open_in_terminal(
 }
 
 /// Spawn one terminal per its recipe.
-fn spawn(info: &TerminalInfo, script: &Path, workspace: &Path, env: &[(String, String)]) -> Result<()> {
+fn spawn(
+    info: &TerminalInfo,
+    script: &Path,
+    workspace: &Path,
+    env: &[(String, String)],
+) -> Result<()> {
     let script = script.to_string_lossy().into_owned();
     let ws = workspace.to_string_lossy().into_owned();
     let program = if info.path.is_empty() {
@@ -215,7 +249,12 @@ fn spawn(info: &TerminalInfo, script: &Path, workspace: &Path, env: &[(String, S
                 a
             }
             "wezterm" => {
-                let mut a = vec!["cli".to_string(), "start".to_string(), "--cwd".into(), ws.clone()];
+                let mut a = vec![
+                    "cli".to_string(),
+                    "start".to_string(),
+                    "--cwd".into(),
+                    ws.clone(),
+                ];
                 a.push("--".into());
                 a.extend(ps.iter().cloned());
                 a
@@ -246,11 +285,45 @@ fn spawn(info: &TerminalInfo, script: &Path, workspace: &Path, env: &[(String, S
         }
         cmd.env_clear();
         cmd.envs(pairs);
-        cmd.spawn().map_err(|e| {
-            Error::Other(format!("failed to open terminal '{}': {e}", info.label))
-        })?;
+        cmd.spawn()
+            .map_err(|e| Error::Other(format!("failed to open terminal '{}': {e}", info.label)))?;
         crate::logging::info(&format!("opened terminal: {} ({})", info.label, program));
         Ok(())
+    } else if cfg!(target_os = "macos") && matches!(recipe.as_str(), "terminal" | "iterm2") {
+        #[cfg(unix)]
+        {
+            let socket = start_env_bridge(env)?;
+            // Terminal history and AppleScript contain only the socket/script
+            // paths. The key crosses the socket once and stays in the child.
+            let command = format!(
+                "set +x; unset AGENT_SWITCH_ENV_READY; eval \"$(/usr/bin/nc -U '{}')\"; [ \"$AGENT_SWITCH_ENV_READY\" = 1 ] || exit 1; exec /bin/sh '{}'",
+                sh_quote(&socket.to_string_lossy()), sh_quote(&script)
+            );
+            let payload = format!("/bin/sh -c '{}'", sh_quote(&command));
+            let apple = if recipe == "terminal" {
+                format!(
+                    "tell application \"Terminal\" to do script \"{}\"",
+                    applescript_quote(&payload)
+                )
+            } else {
+                format!("tell application \"iTerm\"\nactivate\nset newWindow to (create window with default profile)\ntell current session of newWindow to write text \"{}\"\nend tell", applescript_quote(&payload))
+            };
+            let output = std::process::Command::new("/usr/bin/osascript")
+                .arg("-e")
+                .arg(apple)
+                .output()?;
+            if !output.status.success() {
+                let _ = std::fs::remove_file(&socket);
+                return Err(Error::Other(format!(
+                    "macOS could not open {}: {}",
+                    info.label,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )));
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        unreachable!()
     } else {
         // Unix/macOS: terminal emulators do not pass the caller's
         // environment through, so the secrets are exported inline in the
@@ -260,17 +333,23 @@ fn spawn(info: &TerminalInfo, script: &Path, workspace: &Path, env: &[(String, S
             .map(|(k, v)| format!("export {k}='{}'", sh_quote(v)))
             .collect::<Vec<_>>()
             .join("; ");
-        let shell_cmd = format!("{}; exec '{}'", exports, sh_quote(&script));
-        let payload =
-            format!("{exports}; source '{}'", sh_quote(&script));
+        let shell_cmd = if exports.is_empty() {
+            format!("exec '{}'", sh_quote(&script))
+        } else {
+            format!("{exports}; exec '{}'", sh_quote(&script))
+        };
+        let payload = if exports.is_empty() {
+            format!("source '{}'", sh_quote(&script))
+        } else {
+            format!("{exports}; source '{}'", sh_quote(&script))
+        };
         let mut cmd = match recipe.as_str() {
             "terminal" => {
                 let mut c = std::process::Command::new("osascript");
-                c.arg("-e")
-                    .arg(format!(
-                        "tell application \"Terminal\" to do script \"{}\"",
-                        applescript_quote(&payload)
-                    ));
+                c.arg("-e").arg(format!(
+                    "tell application \"Terminal\" to do script \"{}\"",
+                    applescript_quote(&payload)
+                ));
                 c
             }
             "iterm2" => {
@@ -298,7 +377,12 @@ fn spawn(info: &TerminalInfo, script: &Path, workspace: &Path, env: &[(String, S
             }
             "alacritty" | "kitty" => {
                 let mut c = std::process::Command::new(&program);
-                c.arg("-d").arg(&ws).arg("--").arg("sh").arg("-c").arg(&shell_cmd);
+                c.arg("-d")
+                    .arg(&ws)
+                    .arg("--")
+                    .arg("sh")
+                    .arg("-c")
+                    .arg(&shell_cmd);
                 c
             }
             "wezterm" => {
@@ -320,12 +404,63 @@ fn spawn(info: &TerminalInfo, script: &Path, workspace: &Path, env: &[(String, S
                 c
             }
         };
-        cmd.spawn().map_err(|e| {
-            Error::Other(format!("failed to open terminal '{}': {e}", info.label))
-        })?;
+        cmd.spawn()
+            .map_err(|e| Error::Other(format!("failed to open terminal '{}': {e}", info.label)))?;
         crate::logging::info(&format!("opened terminal: {}", info.label));
         Ok(())
     }
+}
+
+/// One-shot secret handoff. The containing runtime is private and the socket
+/// itself is mode 0600. A failed launch expires without creating a key file.
+#[cfg(unix)]
+fn start_env_bridge(env: &[(String, String)]) -> Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+    // macOS limits Unix socket paths to 104 bytes; use a private short directory.
+    let dir = std::env::temp_dir().join(format!(
+        "as-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..12]
+    ));
+    std::fs::create_dir(&dir)?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    let socket = dir.join("env.sock");
+    let listener = UnixListener::bind(&socket)?;
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+    listener.set_nonblocking(true)?;
+    let mut payload = String::new();
+    // Drop ambient provider/session values inherited from the user's terminal.
+    for (key, _) in std::env::vars().filter(|(k, _)| crate::launcher::is_ambient_env_var(k)) {
+        payload.push_str(&format!("unset {key}\n"));
+    }
+    for (key, value) in env {
+        payload.push_str(&format!("export {key}='{}'\n", sh_quote(value)));
+    }
+    // A failed/missing bridge must fail closed rather than use terminal credentials.
+    payload.push_str("AGENT_SWITCH_ENV_READY=1\n");
+    let cleanup = socket.clone();
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+                    let _ = stream.write_all(payload.as_bytes());
+                    break;
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(50))
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = std::fs::remove_file(cleanup);
+        let _ = std::fs::remove_dir(dir);
+    });
+    Ok(socket)
 }
 
 /// Shell single-quote escaping: `'` -> `'\''`.
@@ -358,8 +493,7 @@ mod tests {
         // usually at least xterm or x-terminal-emulator).
         assert!(!found.is_empty());
         // Labels are unique.
-        let labels: std::collections::HashSet<_> =
-            found.iter().map(|t| t.label.clone()).collect();
+        let labels: std::collections::HashSet<_> = found.iter().map(|t| t.label.clone()).collect();
         assert_eq!(labels.len(), found.len());
     }
 
@@ -367,6 +501,8 @@ mod tests {
     fn resolve_custom_matches_by_file_name() {
         let stem = if cfg!(windows) {
             r"C:\Program Files\WindowsApps\wt.exe"
+        } else if cfg!(target_os = "macos") {
+            "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal"
         } else {
             "/usr/bin/gnome-terminal"
         };
@@ -376,6 +512,8 @@ mod tests {
             info.map(|i| i.bin),
             if cfg!(windows) {
                 Some("wt".to_string())
+            } else if cfg!(target_os = "macos") {
+                Some("terminal".to_string())
             } else {
                 Some("gnome-terminal".to_string())
             }

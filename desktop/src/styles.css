@@ -583,6 +583,11 @@ code {
   border-radius: var(--radius);
   box-shadow: 0 12px 32px rgba(16, 24, 40, 0.18);
   animation: modal-in 0.16s ease-out;
+  padding: 20px 24px;
+  width: min(480px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 @keyframes modal-in {
@@ -594,12 +599,6 @@ code {
     opacity: 1;
     transform: none;
   }
-}
-  padding: 20px 24px;
-  width: min(480px, calc(100vw - 48px));
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
 }
 
 .modal h3 {
