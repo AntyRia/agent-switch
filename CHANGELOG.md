@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Use environment-backed API keys for GUI connection tests and model-list requests.
 - Recognize Apple Silicon asset names and use POSIX-compatible syntax in the
   Unix installer.
+- Fix the Unix installer's syntax error when piped into macOS `/bin/sh`.
 
 ### Documentation
 

@@ -7,7 +7,7 @@
 # Downloads the latest release asset named
 #   agent-switch-<version>-<arch>-apple-darwin.zip   (macOS)
 #   agent-switch-<version>-<arch>-unknown-linux-gnu.zip (Linux)
-# and installs it to ~/.local/bin (on PATH on most systems).
+# and installs it to ~/.local/bin. Set AGENT_SWITCH_INSTALL_DIR to override.
 
 set -eu
 
@@ -31,17 +31,17 @@ JSON="$(curl -fsSL -H 'User-Agent: agent-switch-install' "$API")"
 TAG="$(printf '%s\n' "$JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 VERSION="${TAG#v}"
 ASSET="agent-switch-${VERSION}-${TARGET}.zip"
-URL="$(printf '%s\n' "$JSON" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' | while IFS= read -r candidate; do
-  case "$candidate" in
-    *"/$ASSET") printf '%s\n' "$candidate"; break ;;
-  esac
-done)"
+# Keep case patterns out of command substitution: macOS /bin/sh can misparse
+# them when this script is read from a pipe, even when `sh -n` succeeds.
+URL="$(printf '%s\n' "$JSON" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' | awk -v asset="$ASSET" '
+  length($0) >= length(asset) + 1 && substr($0, length($0) - length(asset)) == "/" asset { print; exit }
+')"
 if [ -z "${TAG:-}" ] || [ -z "${URL:-}" ]; then
   echo "Asset '${ASSET}' not found in release '${TAG:-unknown}'. Check the release assets or build from source." >&2
   exit 1
 fi
 
-BIN_DIR="${HOME}/.local/bin"
+BIN_DIR="${AGENT_SWITCH_INSTALL_DIR:-${HOME}/.local/bin}"
 mkdir -p "$BIN_DIR"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -57,14 +57,17 @@ case ":${PATH}:" in
     # This script runs in a subshell, so it cannot change the PATH of the
     # shell that invoked it. Persist the export for future shells (best
     # effort, idempotent), and print the line for the current one.
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
-      if [ -f "$rc" ] && ! grep -qs "agent-switch PATH" "$rc"; then
-        { printf '\n# agent-switch PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR"; } >> "$rc" 2>/dev/null || true
-      fi
-    done
+    # Custom destinations may be temporary; leave shell configuration alone.
+    if [ -z "${AGENT_SWITCH_INSTALL_DIR:-}" ]; then
+      for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if [ -f "$rc" ] && ! grep -qs "agent-switch PATH" "$rc"; then
+          { printf '\n# agent-switch PATH\nexport PATH="%s:$PATH"\n' "$BIN_DIR"; } >> "$rc" 2>/dev/null || true
+        fi
+      done
+    fi
     echo "Note: ${BIN_DIR} is not on your PATH yet."
     echo "  current shell:  export PATH=\"${BIN_DIR}:\$PATH\""
-    echo "  future shells:  the export was appended to your shell rc file(s)."
+    echo "  future shells:  ensure the export is present in your shell startup file."
     ;;
 esac
 

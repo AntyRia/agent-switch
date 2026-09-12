@@ -17,6 +17,9 @@ commands, and the invariants every change must preserve.
 cargo test                 # unit tests (sandboxed via AGENT_SWITCH_HOME)
 cargo build --release
 
+# Unix installer (offline fixtures; includes stdin execution on macOS /bin/sh)
+python3 -m unittest discover -s tests -p 'test_install.py'
+
 # GUI (from desktop/)
 cd desktop
 npm install

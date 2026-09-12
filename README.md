@@ -161,9 +161,10 @@ and that folder. The underlying CLIs and OS application caches are separate.
 
 Downloads the latest release from
 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and installs
-it. Windows configures the user PATH. On macOS/Linux it installs to
-`~/.local/bin` and prints a PATH export command if needed; it does not edit
-shell startup files.
+it. Windows updates both the user PATH and the current PowerShell session.
+On macOS/Linux it installs to `~/.local/bin`. If needed, it adds a PATH entry
+to existing `.bashrc`, `.zshrc` and `.profile` files and prints the export
+command for the current terminal; a piped script cannot change its parent shell.
 
 **Windows** (PowerShell):
 
