@@ -25,41 +25,37 @@ case "$OS" in
   *) echo "unsupported OS: $OS (need macOS or Linux)" >&2; exit 1 ;;
 esac
 
-API="https://api.github.com/repos/${REPO}/releases"
-fetch_release() {
-  curl -fsSL --connect-timeout 10 --max-time 60 -H 'User-Agent: agent-switch-install' "$1"
-}
-select_package() {
-  URL=
-  if printf '%s\n' "$1" | grep -Eq '^[[:space:]]*"(draft|prerelease)": *true'; then
-    return
-  fi
-  TAG="$(printf '%s\n' "$1" | sed -n 's/^[[:space:]]*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
-  VERSION="${TAG#v}"
-  ASSET="agent-switch-${VERSION}-${TARGET}.zip"
-  # Avoid case patterns inside command substitution: macOS /bin/sh can
-  # misparse them when reading a pipe, even when `sh -n` succeeds.
-  URL="$(printf '%s\n' "$1" | sed -n 's/^[[:space:]]*"browser_download_url": *"\([^"]*\)".*/\1/p' | awk -v asset="$ASSET" '
-    length($0) >= length(asset) + 1 && substr($0, length($0) - length(asset)) == "/" asset { print; exit }
-  ')"
-}
+# Node.js is also required for the npm-installed Codex / Claude CLIs.
+if ! command -v node >/dev/null 2>&1; then
+  echo "This installer requires Node.js. Install it from https://nodejs.org or download the CLI ZIP from https://github.com/${REPO}/releases." >&2
+  exit 1
+fi
 
+API="https://api.github.com/repos/${REPO}/releases"
 echo "Finding the latest ${TARGET} package from ${REPO} ..."
-JSON="$(fetch_release "$API/latest")"
-select_package "$JSON"
-LATEST_TAG="$TAG"
 PAGE=1
+URL=
 while [ -z "$URL" ]; do
-  RELEASES="$(fetch_release "$API?per_page=100&page=$PAGE")"
-  TAGS="$(printf '%s\n' "$RELEASES" | sed -n 's/^[[:space:]]*"tag_name": *"\([^"]*\)".*/\1/p')"
-  [ -n "$TAGS" ] || break
-  for RELEASE_TAG in $TAGS; do
-    [ "$RELEASE_TAG" != "$LATEST_TAG" ] || continue
-    JSON="$(fetch_release "$API/tags/$RELEASE_TAG")"
-    select_package "$JSON"
-    [ -z "$URL" ] || break
-  done
-  PAGE=$((PAGE + 1))
+  RELEASES="$(curl -fsSL --connect-timeout 10 --max-time 60 -H 'User-Agent: agent-switch-install' "$API?per_page=100&page=$PAGE")"
+  # JavaScript template literals below are evaluated by Node.js.
+  # shellcheck disable=SC2016
+  RESULT="$(printf '%s\n' "$RELEASES" | node -e '
+    const releases = JSON.parse(require("fs").readFileSync(0, "utf8"));
+    if (!Array.isArray(releases)) throw new Error("Expected a GitHub release list");
+    for (const release of releases) {
+      if (release.draft || release.prerelease) continue;
+      const version = release.tag_name.replace(/^v/, "");
+      const name = `agent-switch-${version}-${process.argv[1]}.zip`;
+      const asset = release.assets.find(asset => asset.name === name);
+      if (asset) { console.log(asset.browser_download_url); process.exit(0); }
+    }
+    console.log(releases.length ? "next-page" : "no-package");
+  ' "$TARGET")"
+  case "$RESULT" in
+    next-page) PAGE=$((PAGE + 1)) ;;
+    no-package) break ;;
+    *) URL="$RESULT" ;;
+  esac
 done
 if [ -z "$URL" ]; then
   echo "No published package for ${TARGET}. See https://github.com/${REPO}/releases or build from source." >&2
@@ -71,6 +67,7 @@ mkdir -p "$BIN_DIR"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
+ASSET="${URL##*/}"
 echo "Downloading ${ASSET} ..."
 curl -fsSL -o "${TMP}/as.zip" "$URL"
 unzip -oq "${TMP}/as.zip" -d "$TMP"

@@ -5,6 +5,7 @@ Run with: python3 -m unittest discover -s tests -p 'test_install.py'
 
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,18 +25,21 @@ class InstallTests(unittest.TestCase):
         self.bin = self.root / "tools"
         self.bin.mkdir()
         self.destination = self.root / "installed"
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node.js is required for installer tests")
+        (self.bin / "node").symlink_to(node)
         self.env = dict(os.environ, PATH=f"{self.bin}:/usr/bin:/bin",
                         AGENT_SWITCH_INSTALL_DIR=str(self.destination))
         self.metadata = self.root / "release.json"
         self.metadata.write_text(json.dumps({
             "tag_name": "v0.2.1",
             "assets": [
-                {"browser_download_url": "https://example.invalid/other.zip"},
-                {"browser_download_url": f"https://example.invalid/{ASSET}"},
+                {"name": "other.zip", "browser_download_url": "https://example.invalid/other.zip"},
+                {"name": ASSET, "browser_download_url": f"https://example.invalid/{ASSET}"},
             ],
-        }, indent=2))
+        }))
         self.releases = self.root / "releases.json"
-        self.releases.write_text(json.dumps([json.loads(self.metadata.read_text())], indent=2))
+        self.releases.write_text(json.dumps([json.loads(self.metadata.read_text())]))
         (self.root / "v0.2.1.json").write_text(self.metadata.read_text())
         with zipfile.ZipFile(self.root / "asset.zip", "w") as archive:
             archive.writestr("agent-switch", '#!/bin/sh\nprintf "agent-switch 0.2.1\\n"\n')
@@ -92,12 +96,19 @@ fi
         self.assertNotIn("syntax error", result.stderr)
         self.assertFalse((self.destination / "agent-switch").exists())
 
+    def test_indented_json_response_is_supported(self):
+        self.releases.write_text(json.dumps(json.loads(self.releases.read_text()), indent=2))
+        result = self.run_installer()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(ASSET, result.stdout)
+
     def test_newer_release_for_other_platform_does_not_hide_mac_package(self):
         self.metadata.write_text(json.dumps({
             "tag_name": "v0.2.2", "assets": [
                 {"browser_download_url": "https://example.invalid/agent-switch-0.2.2-x86_64-pc-windows-msvc.zip"},
             ],
         }, indent=2))
+        self.releases.write_text(json.dumps([json.loads(self.metadata.read_text()), json.loads((self.root / "v0.2.1.json").read_text())]))
         result = self.run_installer()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(ASSET, result.stdout)
