@@ -67,9 +67,11 @@ Each profile owns a **persistent** isolated home, so:
   local servers or official endpoints at the same time, without interference.
 - **Zero-cost switching.** Switching providers means launching a different
   profile; inside a session, `/model` switches models within the profile.
-- **Keys never hit disk.** The API key is injected as a per-process
-  environment variable only — it is never written into any config file or
-  start script.
+- **Key-safe launch.** The API key is injected as a per-process environment
+  variable and is never copied into generated runtime config files or start
+  scripts. A literal `provider.api_key` is stored in the profile TOML; use
+  `provider.api_key_env` when the secret must remain outside the config
+  directory.
 
 ## Features
 
@@ -89,13 +91,15 @@ Each profile owns a **persistent** isolated home, so:
   from the CLI or the GUI; a session whose terminal is still open is flagged
   **Open** and cannot be resumed twice. Pinned sessions are protected, and the
   GUI can clear all non-pinned sessions in one click.
-- **Model auto-sync** — every new Codex launch strictly syncs the provider's
-  model list into the model catalog (models the server no longer serves are
-  removed, new ones added, the default model always kept), so `/model` in the
-  TUI never offers a model the provider stopped serving.
-- **Key-safe** — the API key is injected as a per-process environment
-  variable only; never written to any config file or start script, and masked
-  everywhere it is displayed.
+- **Model auto-sync** — a successful model-list fetch replaces the provider's
+  catalog (stale entries are removed and the configured default is kept). If
+  the fetch fails, the existing catalog is retained and the launch reports the
+  sync failure; an old model may still be unavailable upstream.
+- **Key-safe launch** — the API key is injected as a per-process environment
+  variable and is never copied into generated runtime config files or start
+  scripts. If `provider.api_key` is used, the profile TOML necessarily stores
+  that value; use `provider.api_key_env` when the key must remain outside the
+  Agent Switch config directory. Keys are masked everywhere they are displayed.
 - **CLI + GUI** — a single-file command-line tool and a bilingual
   (Chinese / English) Tauri desktop app that share the same profile files.
 
@@ -152,8 +156,9 @@ and that folder; nothing else is left behind.**
 #### Option A — One-line install (recommended)
 
 Downloads the latest release from
-[GitHub Releases](https://github.com/AntyRia/agent-switch/releases), installs
-it and configures `PATH` automatically.
+[GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and installs
+it to `~/.local/bin`. If that directory is not already on `PATH`, the script
+prints the export command; it does not edit shell startup files.
 
 **Windows** (PowerShell):
 
@@ -167,19 +172,20 @@ irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.
 curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
 ```
 
-> Windows (x86_64) is the first published platform; the scripts already follow
-> the standard naming for macOS / Linux and will work as soon as those release
-> assets exist.
+> The installer requires a matching release asset and an API request that can
+> read this repository. For a private repository, download an asset with an
+> authenticated client or use the local package from this release; the
+> one-line script cannot supply GitHub credentials.
 
 Release asset naming: `agent-switch-<version>-<target>.zip` (standard Rust
 target names).
 
-| Platform | Asset name (v0.2.0 as an example) |
+| Platform | Asset name (v0.2.1 as an example) |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip` |
-| macOS (Apple Silicon) | `agent-switch-0.2.0-aarch64-apple-darwin.zip` |
-| macOS (Intel) | `agent-switch-0.2.0-x86_64-apple-darwin.zip` |
-| Linux x64 | `agent-switch-0.2.0-x86_64-unknown-linux-gnu.zip` |
+| Windows x64 | `agent-switch-0.2.1-x86_64-pc-windows-msvc.zip` |
+| macOS (Apple Silicon) | `agent-switch-0.2.1-aarch64-apple-darwin.zip` |
+| macOS (Intel) | `agent-switch-0.2.1-x86_64-apple-darwin.zip` |
+| Linux x64 | `agent-switch-0.2.1-x86_64-unknown-linux-gnu.zip` |
 
 Prefer to do it by hand? Download the matching zip, unzip it, and put
 `agent-switch(.exe)` anywhere on your `PATH`.
@@ -207,10 +213,11 @@ cargo install --path crates/agent-switch-cli   # optional: onto your PATH
 
 ### 2. GUI desktop app
 
-The GUI ships the **complete feature set** (profile editor / launch / session
-pool / settings / logs / connection test / model list) — the CLI binary is not
-required. You still need the underlying Codex / Claude CLI(s) from npm (see
-[Requirements](#requirements)).
+The GUI ships the supported feature set (profile editor / launch / session
+pool / settings / logs / connection test / model list) — the `agent-switch`
+CLI binary is not required. You still need the underlying Codex / Claude
+CLI(s) from npm (see [Requirements](#requirements)); the GUI only reports them
+as available after a real executable check.
 
 #### Option A — Download the installer (recommended)
 
@@ -218,12 +225,12 @@ Download the installer for your platform from
 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases) and run
 it.
 
-| Platform | Installer (v0.2.0 as an example) |
+| Platform | Installer (v0.2.1 as an example) |
 | --- | --- |
-| Windows x64 | `Agent.Switch_0.2.0_x64-setup.exe` (NSIS) / `Agent.Switch.Setup.0.2.0.x64.msi` (GitHub replaces spaces in asset names with dots) |
-| macOS (Apple Silicon) | `Agent.Switch_0.2.0_aarch64.dmg` |
-| macOS (Intel) | `Agent.Switch_0.2.0_x64.dmg` |
-| Linux | `Agent.Switch_0.2.0_x64.AppImage` / `.deb` / `.rpm` |
+| Windows x64 | `Agent.Switch_0.2.1_x64-setup.exe` (NSIS) / `Agent.Switch.Setup.0.2.1.x64.msi` (GitHub replaces spaces in asset names with dots) |
+| macOS (Apple Silicon) | `Agent.Switch_0.2.1_aarch64.dmg` (locally built and tested; unsigned ad-hoc package) |
+| macOS (Intel) | Not built by this release |
+| Linux | `Agent.Switch_0.2.1_x64.AppImage` / `.deb` / `.rpm` |
 
 **Uninstall** — the normal way for your OS (Add or Remove Programs on Windows,
 drag out of Applications on macOS, `apt` / `rpm` on Linux). Profiles remain in
@@ -347,9 +354,9 @@ the top-right corner; your choice is remembered.
   Anthropic), the provider category (relay / self-hosted OpenAI-compatible /
   official) and, for Claude profiles, the key mode (Bearer / x-api-key). For
   official profiles the vendor endpoint is fixed and the API key is optional.
-  *Fetch model list* next to the model field **strictly syncs** the *Model
-  list* field with the server (models the upstream no longer offers are
-  removed, new ones added, the default model always kept); the list is written
+  *Fetch model list* next to the model field refreshes the *Model list* field
+  after a successful server response (stale entries are removed and the default
+  model is kept); a failed fetch leaves the previous list in place. The list is written
   into the model catalog on launch and switchable with `/model` in the TUI.
   A new profile's ID is an auto-generated UUID, kept internal — never shown
   or edited.
@@ -484,8 +491,10 @@ Field notes:
 - `provider.base_url` — for codex: the OpenAI-compatible root (usually ends
   in `/v1`); for claude: the Anthropic server root (usually **without**
   `/v1`).
-- `provider.api_key` — the key, injected per-process at launch. Never written
-  into any runtime config or start script.
+- `provider.api_key` — the key, injected per-process at launch. It is never
+  copied into generated runtime config or start scripts; the literal profile
+  field remains on disk. Use `provider.api_key_env` for external secret
+  storage.
 - `provider.api_key_env` — optional: name of an environment variable holding
   the key. When that variable is set and non-empty it takes precedence over
   `api_key`.
@@ -496,10 +505,9 @@ Field notes:
 - `model.effort` — claude only, optional: reasoning effort injected as
   `CLAUDE_CODE_EFFORT_LEVEL`. Set it when the server rejects the CLI's
   default (some vLLM builds accept only `xhigh` / `medium` / `low`).
-- `model.models` — model list: **strictly synced** from the provider on every
-  new Codex launch (models the server no longer serves are removed, new ones
-  added, the default model always kept) and written into the model catalog,
-  so `/model` in the TUI never offers a model the provider stopped serving.
+- `model.models` — model list refreshed after a successful provider fetch. Stale
+  entries are removed on success; when the provider cannot be reached, the last
+  catalog remains so an offline launch can still be attempted.
 - `codex.provider_name` — the name of the `[model_providers.<name>]` section
   in the generated Codex config (only used by the codex engine).
 
@@ -529,7 +537,9 @@ codex / claude) live in [`examples/`](examples/).
 - The API key is passed only as a per-process environment variable of the
   spawned CLI — `OPENAI_API_KEY` for codex, `ANTHROPIC_AUTH_TOKEN` or
   `ANTHROPIC_API_KEY` for claude (per `auth_mode`). It is not exported into
-  your shell and not stored in any config file.
+  your shell or written to generated runtime config/start scripts. A literal
+  `provider.api_key` remains in the profile TOML by design; use
+  `provider.api_key_env` to keep the secret outside the config directory.
 - **The launched CLI gets a clean environment.** Ambient `CLAUDE_CODE_*` /
   `CLAUDECODE` nested-session markers and stray `ANTHROPIC_*` / `OPENAI_*`
   provider vars from the shell (or the app the GUI was started from) are
@@ -579,6 +589,18 @@ codex / claude) live in [`examples/`](examples/).
   npm install
   npm run tauri dev
   ```
+
+### macOS release notes
+
+- The Apple Silicon build targets `aarch64-apple-darwin`; Intel requires a
+  separate `x86_64-apple-darwin` build.
+- The local package is ad-hoc signed and not notarized. Gatekeeper may block a
+  first launch; use Finder's **Open** action once or remove the quarantine
+  attribute after verifying the checksum.
+- macOS Terminal and iTerm are detected from their application bundles. A
+  custom terminal path must name a supported terminal recipe.
+- The release package does not bundle Codex or Claude. Install the required npm
+  CLI globally before creating or launching a matching profile.
 
 ## Contributing
 

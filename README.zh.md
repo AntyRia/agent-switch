@@ -63,8 +63,10 @@ Profile (profiles/<id>.toml)
   官方端点，互不干扰。
 - **切换零成本。** 切供应商就是启动另一个 profile；会话内用 `/model`
   在 profile 的模型列表之间切换。
-- **Key 绝不落盘。** API Key 只以子进程环境变量的方式注入——从不写入
-  任何配置文件或启动脚本。
+- **Key 安全启动。** API Key 只以子进程环境变量的方式注入，从不复制到生成
+  的运行时配置或启动脚本。若使用 `provider.api_key`，该值会按设计保存在
+  profile TOML 中；如需密钥不落入 Agent Switch 配置目录，请使用
+  `provider.api_key_env`。
 
 ## 功能特性
 
@@ -81,11 +83,12 @@ Profile (profiles/<id>.toml)
 - **会话池** —— 会话历史按 profile 存储，可在 CLI 或 GUI 中恢复；终端
   仍打开的会话会标记为 **运行中（Open）**，不能重复恢复。已置顶会话受
   保护，GUI 还支持一键清除所有未置顶会话。
-- **模型自动同步** —— 每次新建 Codex 会话都会把供应商的模型列表严格
-  同步进模型目录（服务端已下线的模型被移除、新模型被加入、默认模型
-  始终保留），TUI 里 `/model` 永远不会出现供应商已停用的模型。
-- **Key 安全** —— API Key 只以子进程环境变量注入；从不写入任何配置
-  文件或启动脚本，所有展示位置一律打码。
+- **模型自动同步** —— 成功获取模型列表后替换该供应商目录（删除已下线
+  模型、加入新模型，并保留当前默认模型）。获取失败时保留旧目录并报告
+  同步失败，旧模型仍可能已被服务端停用。
+- **Key 安全** —— API Key 只以子进程环境变量注入，从不复制到生成的运行时
+  配置或启动脚本。直接填写的 `provider.api_key` 仍会保存在 profile TOML；
+  如需密钥不落盘，请使用 `provider.api_key_env`。所有展示位置一律打码。
 - **CLI + GUI 双形态** —— 单文件命令行工具与双语（中文 / 英文）Tauri
   桌面应用，共用同一套 profile 文件。
 
@@ -140,7 +143,8 @@ macOS / Linux：`~/.agent-switch`）——**彻底卸载 = 删程序 + 删该目
 #### 方式 A——一行命令安装（推荐）
 
 脚本会自动从 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
-下载最新版本，完成安装并配置 `PATH`。
+下载最新版本并安装到 `~/.local/bin`。如果该目录不在 `PATH` 中，脚本只会打印
+需要执行的 `export` 命令，不会修改 shell 启动文件。
 
 **Windows**（PowerShell）：
 
@@ -154,17 +158,18 @@ irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.
 curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh
 ```
 
-> Windows（x86_64）是首批发布的平台；脚本已按 macOS / Linux 的通用命名
-> 规范写好，相应的 release 资产就绪后即可直接使用。
+> 安装脚本要求 Release 中存在匹配资产，并且 API 请求能够读取仓库。仓库为私有
+> 时，请用带认证的客户端下载资产，或使用本版本的本地安装包；一行命令脚本不会
+> 代替你提供 GitHub 凭据。
 
 发布资产命名规范：`agent-switch-<版本>-<target>.zip`（标准 Rust 目标名）。
 
-| 平台 | 资产名（以 v0.2.0 为例） |
+| 平台 | 资产名（以 v0.2.1 为例） |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.0-x86_64-pc-windows-msvc.zip` |
-| macOS（Apple 芯片） | `agent-switch-0.2.0-aarch64-apple-darwin.zip` |
-| macOS（Intel） | `agent-switch-0.2.0-x86_64-apple-darwin.zip` |
-| Linux x64 | `agent-switch-0.2.0-x86_64-unknown-linux-gnu.zip` |
+| Windows x64 | `agent-switch-0.2.1-x86_64-pc-windows-msvc.zip` |
+| macOS（Apple 芯片） | `agent-switch-0.2.1-aarch64-apple-darwin.zip` |
+| macOS（Intel） | `agent-switch-0.2.1-x86_64-apple-darwin.zip` |
+| Linux x64 | `agent-switch-0.2.1-x86_64-unknown-linux-gnu.zip` |
 
 习惯手动操作？下载对应 zip 解压后，把 `agent-switch(.exe)` 放到任意
 `PATH` 目录即可。
@@ -192,21 +197,22 @@ cargo install --path crates/agent-switch-cli   # 可选：安装到 PATH
 
 ### 2. GUI 桌面应用
 
-GUI 提供**完整功能**（Profile 编辑 / 启动 / 会话池 / 设置 / 日志 /
-连通性测试 / 模型列表），不依赖 CLI 二进制。底层仍需 npm 安装对应的
-Codex / Claude CLI（见[运行前提](#运行前提)）。
+GUI 提供支持的功能（Profile 编辑 / 启动 / 会话池 / 设置 / 日志 /
+连通性测试 / 模型列表），不依赖 `agent-switch` CLI 二进制。底层仍需 npm
+安装对应的 Codex / Claude CLI（见[运行前提](#运行前提)）；只有实际检测到可
+执行文件后，GUI 才会显示为可用。
 
 #### 方式 A——下载安装包（推荐）
 
 到 [GitHub Releases](https://github.com/AntyRia/agent-switch/releases)
 下载对应平台的安装包并运行。
 
-| 平台 | 安装包（以 v0.2.0 为例） |
+| 平台 | 安装包（以 v0.2.1 为例） |
 | --- | --- |
-| Windows x64 | `Agent.Switch_0.2.0_x64-setup.exe`（NSIS）/ `Agent.Switch.Setup.0.2.0.x64.msi`（GitHub 资产名中的空格会被替换为点号） |
-| macOS（Apple 芯片） | `Agent.Switch_0.2.0_aarch64.dmg` |
-| macOS（Intel） | `Agent.Switch_0.2.0_x64.dmg` |
-| Linux | `Agent.Switch_0.2.0_x64.AppImage` / `.deb` / `.rpm` |
+| Windows x64 | `Agent.Switch_0.2.1_x64-setup.exe`（NSIS）/ `Agent.Switch.Setup.0.2.1.x64.msi`（GitHub 资产名中的空格会被替换为点号） |
+| macOS（Apple 芯片） | `Agent.Switch_0.2.1_aarch64.dmg`（本机构建并测试，ad-hoc 未公证） |
+| macOS（Intel） | 本版本未构建 |
+| Linux | `Agent.Switch_0.2.1_x64.AppImage` / `.deb` / `.rpm` |
 
 **卸载**——使用系统常规卸载方式（Windows「应用和功能」、macOS 拖出
 应用程序、Linux `apt` / `rpm`）。Profile 仍保留在配置根目录中；删除
@@ -463,9 +469,8 @@ claude 的官方配置：`type = "official"`、
 - `model.effort` —— 仅 claude，可选：以 `CLAUDE_CODE_EFFORT_LEVEL`
   注入的思考强度。当服务端不接受 CLI 默认值时设置（部分 vLLM 构建只
   接受 `xhigh` / `medium` / `low`）。
-- `model.models` —— 模型列表：每次新建 Codex 会话时从供应商**严格同步**
-  （服务端已下线的模型被移除、新模型被加入、默认模型始终保留）并写入
-  模型目录，TUI 里 `/model` 永远不会出现供应商已停用的模型。
+- `model.models` —— 成功获取模型列表后刷新；成功时删除旧条目，服务端不可达
+  时保留最近目录，以便仍可尝试离线启动。
 - `codex.provider_name` —— 生成的 Codex 配置中 `[model_providers.<name>]`
   小节的名称（仅 codex 引擎使用）。
 
@@ -490,8 +495,9 @@ claude 的官方配置：`type = "official"`、
   haiku 时后台请求失败）。
 - API Key 只作为被启动 CLI 的子进程环境变量传递——codex 用
   `OPENAI_API_KEY`，claude 用 `ANTHROPIC_AUTH_TOKEN` 或
-  `ANTHROPIC_API_KEY`（按 `auth_mode` 而定）。不会导出到你的 shell，
-  也不存进任何配置文件。
+  `ANTHROPIC_API_KEY`（按 `auth_mode` 而定）。不会导出到你的 shell，也不会
+  写入生成的运行时配置或启动脚本。直接填写的 `provider.api_key` 仍会保存在
+  profile TOML；如需密钥不落盘，请使用 `provider.api_key_env`。
 - **被启动的 CLI 拿到的是干净环境。** 来自 shell（或启动 GUI 的那个
   应用）的环境里残留的 `CLAUDE_CODE_*` / `CLAUDECODE` 嵌套会话标记，
   以及无关的 `ANTHROPIC_*` / `OPENAI_*` 供应商变量都会被清除，只应用
@@ -536,6 +542,17 @@ claude 的官方配置：`type = "official"`、
   npm install
   npm run tauri dev
   ```
+
+### macOS 发布说明
+
+- Apple 芯片构建目标为 `aarch64-apple-darwin`；Intel 需要单独构建
+  `x86_64-apple-darwin`。
+- 本地安装包使用 ad-hoc 签名，未进行 Apple 公证。首次启动若被 Gatekeeper
+  拦截，请在核对校验和后通过 Finder 的“打开”执行一次。
+- macOS Terminal 与 iTerm 会从应用程序包路径自动检测；自定义终端路径必须
+  对应受支持的终端配方。
+- 安装包不包含 Codex 或 Claude。创建或启动对应 profile 前，必须先全局安装
+  所需的 npm CLI。
 
 ## 参与贡献
 

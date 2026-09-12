@@ -167,6 +167,7 @@ export const api = {
   testConnection: (t: {
     base_url: string;
     api_key: string;
+    api_key_env?: string | null;
     model: string;
     engine: string;
     auth_mode: string | null;
@@ -177,6 +178,7 @@ export const api = {
   fetchModels: (m: {
     base_url: string;
     api_key: string;
+    api_key_env?: string | null;
     engine: string;
     auth_mode: string | null;
     provider_type: string;

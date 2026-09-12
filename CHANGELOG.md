@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-09-12
+
+### Fixed
+
+- Detect the standard macOS Terminal.app and iTerm.app bundles when selecting
+  a terminal for GUI launches.
+- Restrict Unix profile/runtime directories to mode 0700 and profile files to
+  mode 0600.
+- Correct the GUI launch modal CSS and align the documentation with the actual
+  macOS release and key storage behavior.
+
 ## [0.1.0] - 2026-09-10
 
 ### Added

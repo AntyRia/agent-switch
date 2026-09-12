@@ -14,6 +14,11 @@ set -eu
 REPO="AntyRia/agent-switch"
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
+case "$ARCH" in
+  arm64|aarch64) ARCH="aarch64" ;;
+  x86_64|amd64) ARCH="x86_64" ;;
+  *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 case "$OS" in
   darwin) TARGET="${ARCH}-apple-darwin" ;;
   linux)  TARGET="${ARCH}-unknown-linux-gnu" ;;
@@ -26,9 +31,13 @@ JSON="$(curl -fsSL -H 'User-Agent: agent-switch-install' "$API")"
 TAG="$(printf '%s\n' "$JSON" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)"
 VERSION="${TAG#v}"
 ASSET="agent-switch-${VERSION}-${TARGET}.zip"
-URL="$(printf '%s\n' "$JSON" | grep -o "\"browser_download_url\": *\"[^\"]*${ASSET//./\\.}\"" | head -n1 | sed 's/^.*: *"//; s/"$//')"
+URL="$(printf '%s\n' "$JSON" | sed -n 's/.*"browser_download_url": *"\([^"]*\)".*/\1/p' | while IFS= read -r candidate; do
+  case "$candidate" in
+    *"/$ASSET") printf '%s\n' "$candidate"; break ;;
+  esac
+done)"
 if [ -z "${TAG:-}" ] || [ -z "${URL:-}" ]; then
-  echo "Asset '${ASSET}' not found in release '${TAG:-unknown}'. Only Windows (x86_64) assets are published so far." >&2
+  echo "Asset '${ASSET}' not found in release '${TAG:-unknown}'. Check the release assets or build from source." >&2
   exit 1
 fi
 
