@@ -17,6 +17,13 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     throw "Only x86_64 Windows is published so far."
 }
 
+# Use a GitHub token when one is available: unauthenticated API calls from
+# shared IPs (CI runners) can hit the 60/hour rate limit and get 403.
+$headers = @{ "User-Agent" = "agent-switch-installer" }
+$token = $env:GITHUB_TOKEN
+if (-not $token) { $token = $env:GH_TOKEN }
+if ($token) { $headers["Authorization"] = "Bearer $token" }
+
 # Releases can contain packages for different platforms. Skip releases that
 # do not have a Windows package, including drafts and prereleases.
 Write-Host "Finding the latest Windows x64 package from $Repo ..."
@@ -25,7 +32,7 @@ $page = 1
 do {
     # Invoke-RestMethod returns the JSON array as one pipeline object. Assign
     # it directly so foreach enumerates releases instead of a nested array.
-    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100&page=$page" -Headers @{ "User-Agent" = "agent-switch-installer" }
+    $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100&page=$page" -Headers $headers
     foreach ($rel in $releases) {
         if ($rel.draft -or $rel.prerelease) { continue }
         $version = $rel.tag_name -replace '^v', ''

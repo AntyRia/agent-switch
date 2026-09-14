@@ -126,6 +126,9 @@ jobs:
     needs: release
     env:
       EXPECTED_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      # Authenticate the installer's API calls: runner egress IPs are shared
+      # and unauthenticated calls hit the 60/hour rate limit (HTTP 403).
+      GITHUB_TOKEN: ${{ github.token }}
     if: always() && (needs.release.result == 'success' || needs.release.result == 'skipped')
     runs-on: macos-15
     timeout-minutes: 10
@@ -171,6 +174,9 @@ jobs:
           persist-credentials: false
       - name: Verify Windows package selection after macOS release
         shell: pwsh
+        env:
+          # Same rate-limit reason as the macOS verification job.
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           try {
             ./scripts/install.ps1

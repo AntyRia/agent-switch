@@ -32,11 +32,20 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 
 API="https://api.github.com/repos/${REPO}/releases"
+# Use a GitHub token when one is available: unauthenticated API calls from
+# shared IPs (CI runners) can hit the 60/hour rate limit and get 403.
+fetch_releases() {
+  if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
+    curl -fsSL --connect-timeout 10 --max-time 60 -H "Authorization: Bearer ${GITHUB_TOKEN:-${GH_TOKEN:-}}" -H 'User-Agent: agent-switch-install' "$1"
+  else
+    curl -fsSL --connect-timeout 10 --max-time 60 -H 'User-Agent: agent-switch-install' "$1"
+  fi
+}
 echo "Finding the latest ${TARGET} package from ${REPO} ..."
 PAGE=1
 URL=
 while [ -z "$URL" ]; do
-  RELEASES="$(curl -fsSL --connect-timeout 10 --max-time 60 -H 'User-Agent: agent-switch-install' "$API?per_page=100&page=$PAGE")"
+  RELEASES="$(fetch_releases "$API?per_page=100&page=$PAGE")"
   # JavaScript template literals below are evaluated by Node.js.
   # shellcheck disable=SC2016
   RESULT="$(printf '%s\n' "$RELEASES" | node -e '
