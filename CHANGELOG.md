@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-09-13
+
+### Fixed
+
+- Apps launched from the Dock, Finder or Start menu no longer report the
+  Codex/Claude CLIs as not installed: when the shell-less process PATH
+  misses a CLI, the app now probes well-known install locations (Homebrew,
+  npm/bun/volta globals, nvm/fnm/asdf/mise node trees, scoop, nvm-windows)
+  and, on macOS/Linux, the user's login-shell PATH.
+- The version probe adds the CLI's own directory to the child PATH so the
+  `#!/usr/bin/env node` shebang resolves even in a minimal GUI environment.
+- Ship the installer fixes committed after the v0.2.2 tag (release-metadata
+  JSON parsing, Windows asset enumeration) — the published v0.2.2
+  installers predate them.
+
 ## [0.2.2] - 2026-09-12
 
 ### Fixed
