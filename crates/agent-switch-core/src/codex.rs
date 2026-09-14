@@ -232,9 +232,10 @@ pub fn render_model_catalog(p: &Profile) -> String {
         .expect("serializing a json! Value cannot fail")
 }
 
-/// Locate the codex executable on PATH (Windows PATHEXT covers .cmd/.exe).
+/// Locate the codex executable (process PATH, then well-known install
+/// locations, then the login shell's PATH — see `resolve`).
 pub fn find_codex() -> Result<PathBuf> {
-    which::which("codex").map_err(|_| Error::CodexNotFound)
+    crate::resolve::resolve_binary("codex").ok_or(Error::CodexNotFound)
 }
 
 /// Windows cannot exec .cmd/.bat directly — they need a cmd.exe wrapper.
@@ -253,16 +254,17 @@ pub fn needs_cmd_wrap(path: &Path) -> bool {
 /// `codex --version`, first line of output (None when codex is missing).
 pub fn codex_version() -> Option<String> {
     let path = find_codex().ok()?;
-    let output = if needs_cmd_wrap(&path) {
-        std::process::Command::new("cmd.exe")
-            .arg("/C")
-            .arg(&path)
-            .arg("--version")
-            .output()
-            .ok()?
+    let mut cmd = if needs_cmd_wrap(&path) {
+        let mut c = std::process::Command::new("cmd.exe");
+        c.arg("/C").arg(&path).arg("--version");
+        c
     } else {
-        std::process::Command::new(&path).arg("--version").output().ok()?
+        let mut c = std::process::Command::new(&path);
+        c.arg("--version");
+        c
     };
+    crate::resolve::prepend_bin_dir_to_path(&mut cmd, &path);
+    let output = cmd.output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout
         .lines()

@@ -11,9 +11,9 @@ pub enum Error {
     ProfileNotFound(String),
     #[error("profile validation failed: {0}")]
     Validation(String),
-    #[error("Codex CLI not found in PATH")]
+    #[error("Codex CLI not found (checked PATH and common install locations)")]
     CodexNotFound,
-    #[error("Claude CLI not found in PATH")]
+    #[error("Claude CLI not found (checked PATH and common install locations)")]
     ClaudeNotFound,
     #[error("no API key configured for profile {0}")]
     NoApiKey(String),

@@ -51,6 +51,7 @@ use agent_switch_core::launcher;
 use agent_switch_core::logging;
 use agent_switch_core::profile::Profile;
 use agent_switch_core::profile_store::{config_root, ProfileStore};
+use agent_switch_core::resolve;
 use agent_switch_core::settings::Settings;
 use agent_switch_core::terminal;
 use notify::Watcher;
@@ -795,8 +796,16 @@ static STATUS_CACHE: Mutex<Option<(Instant, StatusOut)>> = Mutex::new(None);
 
 #[tauri::command]
 pub async fn get_status(force: Option<bool>) -> Result<StatusOut, String> {
+    let force = force.unwrap_or(false);
+    if force {
+        // A forced refresh (the "re-detect" button after installing a
+        // missing CLI) must also drop the resolver's cached "not found"
+        // answers — otherwise a just-installed CLI keeps reporting as
+        // missing for up to the resolver's negative TTL.
+        resolve::clear_binary_cache();
+    }
     let guard = STATUS_CACHE.lock().ok();
-    if !force.unwrap_or(false) {
+    if !force {
         if let Some(ref cache) = guard {
             if let Some((t, s)) = &**cache {
                 if t.elapsed() < STATUS_TTL {

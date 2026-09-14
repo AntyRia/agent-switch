@@ -12,6 +12,7 @@ pub mod logging;
 pub mod models;
 pub mod profile;
 pub mod profile_store;
+pub mod resolve;
 pub mod runtime;
 pub mod sessions;
 pub mod settings;
