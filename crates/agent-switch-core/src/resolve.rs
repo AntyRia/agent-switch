@@ -26,7 +26,10 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(unix)]
+use std::process::Stdio;
+#[cfg(unix)]
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -38,6 +41,7 @@ const NEGATIVE_TTL: Duration = Duration::from_secs(30);
 /// Hard cap for the login-shell probe. A slow or broken profile must not
 /// stall the app; on timeout the probe is abandoned and the binary simply
 /// reports as not found.
+#[cfg(unix)]
 const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 // Cache entry: (when, resolved value). Shared shape for both caches.
@@ -348,6 +352,7 @@ fn probe_login_shell_path() -> Option<Vec<PathBuf>> {
 
 /// Run a command with a hard wall-clock cap: stdout is read on a worker
 /// thread; on timeout the child is killed and `None` returned.
+#[cfg(unix)]
 fn run_capped(program: &Path, args: &[&str]) -> Option<Vec<u8>> {
     use std::io::Read;
     let mut child = Command::new(program)
@@ -380,6 +385,7 @@ fn run_capped(program: &Path, args: &[&str]) -> Option<Vec<u8>> {
 /// Split a `$PATH` dump and keep it only when it looks exactly like a path
 /// variable: non-empty, and every entry absolute. Banners and rc-file
 /// chatter therefore fail the check instead of leaking in as candidates.
+#[cfg(unix)]
 fn parse_path_var(out: &str) -> Option<Vec<PathBuf>> {
     let line = out.lines().rev().map(str::trim).find(|l| !l.is_empty())?;
     #[cfg(windows)]
@@ -418,9 +424,12 @@ mod tests {
         let f = dir.join("no-such-cli-xyz");
         fs::write(&f, "#!/bin/sh\n").unwrap();
         #[cfg(unix)]
-        // Not yet executable: must not count.
-        assert!(find_in_dir(&dir, "no-such-cli-xyz").is_none());
-        make_executable(&f);
+        {
+            // Not yet executable: must not count. On Windows there is no
+            // exec bit, so the bare file is accepted as-is.
+            assert!(find_in_dir(&dir, "no-such-cli-xyz").is_none());
+            make_executable(&f);
+        }
         assert_eq!(find_in_dir(&dir, "no-such-cli-xyz"), Some(f));
         let _ = fs::remove_dir_all(&dir);
     }
@@ -462,6 +471,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[cfg(unix)]
     #[test]
     fn parse_path_var_rejects_non_path_output() {
         let ok = parse_path_var("some banner\n/usr/bin:/bin:/usr/local/bin\n");
