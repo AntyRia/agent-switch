@@ -17,6 +17,13 @@ use agent_switch_core::update::{
 
 const PAYLOAD: &[u8] = b"#!/bin/sh\necho fake agent-switch 99.0.0\n";
 
+/// The CLI binary's file name for this platform. A real release ZIP holds
+/// the platform-named binary (`agent-switch.exe` on Windows, bare elsewhere),
+/// and `extract_cli_binary` looks for exactly that name.
+fn bin_name() -> &'static str {
+    if cfg!(windows) { "agent-switch.exe" } else { "agent-switch" }
+}
+
 fn build_zip(dir: &std::path::Path, binary_name: &str, content: &[u8]) -> std::path::PathBuf {
     let zip_path = dir.join("test-payload.zip");
     let file = std::fs::File::create(&zip_path).unwrap();
@@ -127,7 +134,7 @@ fn update_pipeline_download_verify_extract_replace() {
     std::fs::create_dir_all(&dir).unwrap();
 
     // --- serve: the release zip + its SHA256SUMS.txt ---
-    let zip_path = build_zip(&dir, "agent-switch", PAYLOAD);
+    let zip_path = build_zip(&dir, bin_name(), PAYLOAD);
     let digest = agent_switch_core::update::sha256_file(&zip_path).unwrap();
     std::fs::write(
         dir.join("SHA256SUMS.txt"),
@@ -202,7 +209,7 @@ fn update_pipeline_download_verify_extract_replace() {
     }
 
     // --- extract the binary out of the zip ---
-    let new_bin = dir.join("out/agent-switch");
+    let new_bin = dir.join("out").join(bin_name());
     std::fs::create_dir_all(new_bin.parent().unwrap()).unwrap();
     extract_cli_binary(&got, &new_bin).unwrap();
     assert_eq!(std::fs::read(&new_bin).unwrap(), PAYLOAD);
@@ -210,7 +217,7 @@ fn update_pipeline_download_verify_extract_replace() {
     // --- replace an existing "installed" binary in place ---
     let install = dir.join("install");
     std::fs::create_dir_all(&install).unwrap();
-    let current = install.join("agent-switch");
+    let current = install.join(bin_name());
     std::fs::write(&current, b"old binary").unwrap();
     replace_binary(&current, &new_bin).unwrap();
     assert_eq!(std::fs::read(&current).unwrap(), PAYLOAD);
