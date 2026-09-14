@@ -175,8 +175,8 @@ curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/i
 
 | 平台 | CLI 安装包 |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.3-x86_64-pc-windows-msvc.zip`（[v0.2.3](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.3)） |
-| macOS（Apple 芯片） | `agent-switch-0.2.3-aarch64-apple-darwin.zip` |
+| Windows x64 | `agent-switch-0.2.4-x86_64-pc-windows-msvc.zip`（[v0.2.4](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4)） |
+| macOS（Apple 芯片） | `agent-switch-0.2.4-aarch64-apple-darwin.zip` |
 | macOS（Intel）/ Linux | 从源码构建 |
 
 习惯手动操作？下载对应 zip 解压后，把 `agent-switch(.exe)` 放到任意
@@ -217,8 +217,8 @@ GUI 提供 Profile 编辑、启动、会话池、设置、日志、
 
 | 平台 | GUI 安装包 |
 | --- | --- |
-| Windows x64 | 使用 [v0.2.3 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.3) |
-| macOS（Apple 芯片） | `Agent.Switch_0.2.3_aarch64.dmg`（ad-hoc 签名，未公证） |
+| Windows x64 | 使用 [v0.2.4 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4) |
+| macOS（Apple 芯片） | `Agent.Switch_0.2.4_aarch64.dmg`（ad-hoc 签名，未公证） |
 | macOS（Intel） | 本版本未构建 |
 | Linux | 本版本未构建，请从源码构建 |
 
@@ -247,6 +247,11 @@ npm install
 npm run tauri build            # 安装包 → src-tauri/target/release/bundle/
 ```
 
+### 更新
+
+- **GUI**：应用启动时会检查官方发布（有缓存、不阻塞界面），发现新版本时弹出确认框；确认后显示下载进度条，校验 SHA-256，替换旧版本并自动重启。关于页也有手动检查按钮。
+- **CLI**：`agent-switch update` 下载并就地安装最新正式版（带校验）；每次启动发现新版本时都会打印一行提示，设置 `AGENT_SWITCH_NO_UPDATE_CHECK=1` 可关闭。
+
 ## 使用
 
 ### 命令一览
@@ -269,6 +274,7 @@ npm run tauri build            # 安装包 → src-tauri/target/release/bundle/
 | `agent-switch cleanup` | 清理旧运行环境目录（保留最近 20 个，删除 7 天以前的）。 |
 | `agent-switch logs [N]` | 查看应用日志最后 N 行（默认 50）。 |
 | `agent-switch settings [--edit]` | 查看或编辑全局启动设置（危险模式、代理、终端）。 |
+| `agent-switch update [--check]` | 下载最新正式版、校验 SHA-256 后就地替换当前二进制；`--check` 仅报告最新版本。 |
 
 ### 示例
 

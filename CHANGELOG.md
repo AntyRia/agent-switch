@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-09-13
+
+### Added
+
+- Built-in update system, on every end:
+  - GUI: checks the official GitHub releases on launch (cached,
+    non-blocking) and offers a confirmation dialog when a new version
+    is available; confirming shows a download progress bar, verifies
+    the package's SHA-256 against the release's `SHA256SUMS.txt`,
+    replaces the old version and relaunches automatically (macOS
+    swaps the .app bundle, Windows runs the new installer after the
+    app exits). The About page adds a manual "check for updates"
+    button.
+  - CLI: a one-line notice on every launch when a newer version exists
+    (network wait capped at 2.5s, disable with
+    `AGENT_SWITCH_NO_UPDATE_CHECK=1`), plus `agent-switch update`
+    which downloads, checksum-verifies and replaces the binary in
+    place (`--check` only reports the latest version).
+
 ## [0.2.3] - 2026-09-13
 
 ### Fixed

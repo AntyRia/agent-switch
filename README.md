@@ -190,8 +190,8 @@ target names). Check the release's asset list before downloading.
 
 | Platform | CLI package |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.3-x86_64-pc-windows-msvc.zip` ([v0.2.3](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.3)) |
-| macOS (Apple Silicon) | `agent-switch-0.2.3-aarch64-apple-darwin.zip` |
+| Windows x64 | `agent-switch-0.2.4-x86_64-pc-windows-msvc.zip` ([v0.2.4](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4)) |
+| macOS (Apple Silicon) | `agent-switch-0.2.4-aarch64-apple-darwin.zip` |
 | macOS (Intel) / Linux | Build from source |
 
 Prefer to do it by hand? Download the matching zip, unzip it, and put
@@ -234,8 +234,8 @@ it.
 
 | Platform | GUI package |
 | --- | --- |
-| Windows x64 | Use the [v0.2.3 Windows installers](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.3) |
-| macOS (Apple Silicon) | `Agent.Switch_0.2.3_aarch64.dmg` (ad-hoc signed, not notarized) |
+| Windows x64 | Use the [v0.2.4 Windows installers](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4) |
+| macOS (Apple Silicon) | `Agent.Switch_0.2.4_aarch64.dmg` (ad-hoc signed, not notarized) |
 | macOS (Intel) | Not built by this release |
 | Linux | Not built by this release; build from source |
 
@@ -267,6 +267,17 @@ npm install
 npm run tauri build            # installers → src-tauri/target/release/bundle/
 ```
 
+### Updating
+
+- **GUI**: the app checks the official releases on launch (cached,
+  non-blocking) and offers a dialog to update in place — download with a
+  progress bar, SHA-256 verification, replacement of the old version and
+  relaunch. The About page has a manual check button.
+- **CLI**: `agent-switch update` downloads and installs the latest release
+  in place (checksum-verified). A one-line notice is printed on every
+  launch when a newer version exists; set `AGENT_SWITCH_NO_UPDATE_CHECK=1`
+  to silence it.
+
 ## Usage
 
 ### Commands
@@ -289,6 +300,7 @@ npm run tauri build            # installers → src-tauri/target/release/bundle/
 | `agent-switch cleanup` | Delete old runtime directories (keeps the newest 20, drops anything older than 7 days). |
 | `agent-switch logs [N]` | Show the last N lines of the app log (default 50). |
 | `agent-switch settings [--edit]` | Show or edit the global launch settings (dangerous mode, proxy, terminal). |
+| `agent-switch update [--check]` | Download the latest release, verify its SHA-256 and replace the running binary in place. `--check` only reports the latest version. |
 
 ### Examples
 
