@@ -906,6 +906,155 @@ pub async fn detect_terminals() -> Result<Vec<TerminalOut>, String> {
         .collect())
 }
 
+/// ---------- Built-in updates ----------
+///
+/// The update channel lives in agent_switch_core::update (shared with the
+/// CLI): check the official GitHub releases, download the package for this
+/// platform, verify it against SHA256SUMS.txt, then install it. The GUI
+/// update swaps the whole app bundle/install and relaunches it; the user's
+/// profiles, sessions and settings are never touched.
+
+/// What the update UI needs to know about the latest official release.
+#[derive(Debug, Serialize)]
+pub struct UpdateInfo {
+    /// The running app's version.
+    pub current: String,
+    /// The latest non-prerelease version; null when the release API was
+    /// unreachable and no cached answer exists.
+    pub latest: Option<String>,
+    /// True when `latest` is strictly newer than `current`.
+    pub has_update: bool,
+    /// The release page (opens in the browser for manual installs).
+    pub release_url: Option<String>,
+    /// The package this machine would download; null when the release
+    /// ships no build for this platform.
+    pub asset_name: Option<String>,
+}
+
+/// Check the official releases for a newer version. `force=true` bypasses
+/// the 6 h cache (the "check now" button); a plain launch check uses the
+/// cache so it costs no network most of the time. Sync on purpose: it runs
+/// on Tauri's command thread pool and must not block the UI thread.
+#[tauri::command]
+pub fn check_for_update(force: Option<bool>) -> Result<UpdateInfo, String> {
+    let force = force.unwrap_or(false);
+    match agent_switch_core::update::check(force, std::time::Duration::from_secs(10)) {
+        agent_switch_core::update::CheckOutcome::Known { release, .. } => {
+            let has_update = agent_switch_core::update::is_newer(&release.tag_name);
+            let release_url = release.html_url.clone();
+            Ok(UpdateInfo {
+                current: agent_switch_core::update::current_version().to_string(),
+                latest: Some(release.version().to_string()),
+                has_update,
+                release_url: Some(release_url),
+                asset_name: agent_switch_core::update::asset_for(
+                    &release,
+                    agent_switch_core::update::PackageKind::Gui,
+                )
+                .map(|a| a.name),
+            })
+        }
+        agent_switch_core::update::CheckOutcome::Unavailable => Ok(UpdateInfo {
+            current: agent_switch_core::update::current_version().to_string(),
+            latest: None,
+            has_update: false,
+            release_url: None,
+            asset_name: None,
+        }),
+    }
+}
+
+/// Download + verify + install the latest version. Emits
+/// "update-progress" events { done, total } (bytes) while downloading.
+///
+/// On macOS the app must EXIT after this returns: a detached script does
+/// the bundle swap (wait for exit → rm old → copy new → relaunch). On
+/// Windows a delayed NSIS installer is spawned and the app must exit too.
+/// The frontend calls exit_app() on success.
+#[tauri::command]
+pub fn start_update(app: tauri::AppHandle) -> Result<String, String> {
+    let release = match agent_switch_core::update::check(
+        true,
+        std::time::Duration::from_secs(10),
+    ) {
+        agent_switch_core::update::CheckOutcome::Known { release, .. } => release,
+        agent_switch_core::update::CheckOutcome::Unavailable => {
+            return Err("could not reach the release API — check the network and retry".into())
+        }
+    };
+    if !agent_switch_core::update::is_newer(&release.tag_name) {
+        return Err("already on the latest version".into());
+    }
+    let asset = agent_switch_core::update::asset_for(
+        &release,
+        agent_switch_core::update::PackageKind::Gui,
+    )
+    .ok_or_else(|| {
+        format!(
+            "no packaged build for this platform in {} — download manually: {}",
+            release.tag_name,
+            agent_switch_core::update::RELEASES_URL
+        )
+    })?;
+    let ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!(
+        "agent-switch-gui-update-{}-{ns}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join(&asset.name);
+
+    let progress_app = app.clone();
+    agent_switch_core::update::download(&asset.browser_download_url, &file, move |done, total| {
+        let _ = progress_app.emit(
+            "update-progress",
+            serde_json::json!({ "done": done, "total": total }),
+        );
+    })
+    .map_err(|e| format!("download failed: {e}"))?;
+    match agent_switch_core::update::verify_against_sums(&release, &asset.name, &file)
+        .map_err(|e| e.to_string())?
+    {
+        Some(_) => {}
+        None => {
+            logging::info("update: no published checksum for the asset — skipped verification")
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let bundle = agent_switch_core::update::macos_bundle()
+            .ok_or("running outside a packaged .app (dev build) — get the DMG from the release page")?;
+        agent_switch_core::update::spawn_macos_updater(std::process::id(), &bundle, &file)
+            .map_err(|e| format!("failed to start the updater: {e}"))?;
+        return Ok("update ready — restarting".into());
+    }
+    #[cfg(windows)]
+    {
+        agent_switch_core::update::spawn_windows_installer(&file)
+            .map_err(|e| format!("failed to start the installer: {e}"))?;
+        return Ok("update ready — restarting".into());
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = std::fs::remove_dir_all(&dir);
+        Err(format!(
+            "no packaged build for this platform in {} — update manually:\ncurl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh",
+            release.tag_name
+        ))
+    }
+}
+
+/// Quit the app (the update flow calls it right after start_update, so the
+/// detached platform installer can replace the running files).
+#[tauri::command]
+pub fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 /// True for create/modify/delete events touching a .toml file.
 fn is_toml_change(event: &notify::Event) -> bool {
     let kind_matches = matches!(

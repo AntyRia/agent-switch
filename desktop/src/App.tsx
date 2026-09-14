@@ -12,12 +12,14 @@ import {
   errorMessage,
   type ProfileView,
   type Status,
+  type UpdateInfo,
 } from "./api";
 import AboutPage from "./About";
 import Editor from "./Editor";
 import LaunchModal from "./Launch";
 import SessionsPage from "./Sessions";
 import SettingsPage from "./Settings";
+import UpdateModal from "./UpdateModal";
 import { I18nProvider, useI18n, type TKey } from "./i18n";
 
 type View =
@@ -51,6 +53,10 @@ function typeLabel(
   return v;
 }
 
+// "Later" is remembered per version: the same release is not offered
+// again at the next launch, a newer one is.
+const UPDATE_DISMISS_KEY = "agent-switch-update-dismissed";
+
 function AppInner() {
   const { t, lang, toggle } = useI18n();
   const [view, setView] = useState<View>({ name: "list" });
@@ -59,6 +65,7 @@ function AppInner() {
   const [listError, setListError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [launchingProfile, setLaunchingProfile] = useState<ProfileView | null>(null);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const toastTimer = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -110,6 +117,54 @@ function AppInner() {
       unlisten?.();
     };
   }, [refresh]);
+
+  // Built-in update: one cached check per launch (6 h backend cache — no
+  // network cost most of the time). Offer the new version unless the user
+  // already dismissed THIS version.
+  useEffect(() => {
+    api
+      .checkForUpdate(false)
+      .then((i) => {
+        if (!i.latest || !i.has_update) return;
+        let dismissed: string | null = null;
+        try {
+          dismissed = window.localStorage.getItem(UPDATE_DISMISS_KEY);
+        } catch {
+          // localStorage unavailable: offer it every launch.
+        }
+        if (dismissed !== i.latest) setUpdateInfo(i);
+      })
+      .catch(() => {
+        // Outside the Tauri shell / backend error: no update offer.
+      });
+  }, []);
+
+  function closeUpdateModal() {
+    if (updateInfo?.latest) {
+      try {
+        window.localStorage.setItem(UPDATE_DISMISS_KEY, updateInfo.latest);
+      } catch {
+        // Ignore: dismissal just won't persist.
+      }
+    }
+    setUpdateInfo(null);
+  }
+
+  // About page "Check for updates": a forced (uncached) check.
+  async function checkForUpdatesNow() {
+    try {
+      const i = await api.checkForUpdate(true);
+      if (i.has_update && i.latest) {
+        setUpdateInfo(i);
+      } else if (i.latest) {
+        showToast(t("updateLatest", { v: i.latest }));
+      } else {
+        showToast(t("updateUnreachable"));
+      }
+    } catch (e) {
+      showToast(t("updateCheckFail", { err: errorMessage(e) }));
+    }
+  }
 
   useEffect(() => {
     return () => {
@@ -237,7 +292,11 @@ function AppInner() {
         {view.name === "settings" && <SettingsPage />}
 
         {view.name === "about" && (
-          <AboutPage status={status} onRecheck={() => void recheckStatus()} />
+          <AboutPage
+            status={status}
+            onRecheck={() => void recheckStatus()}
+            onCheckUpdate={() => void checkForUpdatesNow()}
+          />
         )}
       </main>
 
@@ -260,6 +319,10 @@ function AppInner() {
             showToast(r.warning ? `⚠ ${r.warning}` : started);
           }}
         />
+      )}
+
+      {updateInfo && (
+        <UpdateModal info={updateInfo} onClose={closeUpdateModal} />
       )}
 
       {toast && <div className="toast">{toast}</div>}

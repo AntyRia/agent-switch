@@ -17,4 +17,5 @@ pub mod runtime;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;
+pub mod update;
 pub mod validation;

@@ -610,6 +610,29 @@ code {
   margin: -8px 0 0;
 }
 
+/* ---------- Update modal ---------- */
+
+.update-modal .modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--accent);
+  transition: width 0.2s ease-out;
+}
+
 /* ---------- About page ---------- */
 
 .about-page {

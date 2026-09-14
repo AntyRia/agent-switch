@@ -144,6 +144,24 @@ export interface TerminalInfo {
   path: string;
 }
 
+/** Latest official release info (built-in update system). */
+export interface UpdateInfo {
+  current: string;
+  /** null when the release API was unreachable and no cache exists. */
+  latest: string | null;
+  has_update: boolean;
+  release_url: string | null;
+  /** The package this machine would download; null = no build for this
+   *  platform in the release. */
+  asset_name: string | null;
+}
+
+/** Payload of the "update-progress" event (bytes). */
+export interface UpdateProgress {
+  done: number;
+  total: number;
+}
+
 /** The tail of the log file for the log viewer. */
 export interface LogsResult {
   /** null until the log file has been opened at least once. */
@@ -206,6 +224,14 @@ export const api = {
   saveSettings: (s: SettingsDraft): Promise<void> => invoke("save_settings", { s }),
   getLogs: (lines?: number): Promise<LogsResult> => invoke("get_logs", { lines }),
   detectTerminals: (): Promise<TerminalInfo[]> => invoke("detect_terminals"),
+  // Built-in updates: force=true bypasses the backend's 6 h check cache.
+  checkForUpdate: (force?: boolean): Promise<UpdateInfo> =>
+    invoke("check_for_update", { force }),
+  // Downloads + verifies + prepares the install; the app must then call
+  // exitApp() (the detached platform installer swaps the running app and
+  // relaunches it). "update-progress" events carry the download progress.
+  startUpdate: (): Promise<string> => invoke("start_update"),
+  exitApp: (): Promise<void> => invoke("exit_app"),
 };
 
 /** Backend errors reject with a plain string; normalize any other shape. */

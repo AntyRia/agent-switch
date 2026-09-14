@@ -9,6 +9,8 @@ interface AboutProps {
   status: Status | null;
   /** Triggers the parent's list+status refresh (re-runs the CLI checks). */
   onRecheck: () => void;
+  /** Forced (uncached) update check; offers the modal on a new version. */
+  onCheckUpdate: () => void;
 }
 
 interface CliCardProps {
@@ -54,7 +56,7 @@ async function openExternal(url: string) {
   }
 }
 
-export default function AboutPage({ status, onRecheck }: AboutProps) {
+export default function AboutPage({ status, onRecheck, onCheckUpdate }: AboutProps) {
   const { t } = useI18n();
   return (
     <div className="about-page">
@@ -98,6 +100,16 @@ export default function AboutPage({ status, onRecheck }: AboutProps) {
             />
           </div>
         )}
+      </section>
+
+      <section className="about-section">
+        <div className="about-section-head">
+          <h2>{t("aboutUpdateTitle")}</h2>
+          <button type="button" className="btn secondary small" onClick={onCheckUpdate}>
+            {t("updateCheck")}
+          </button>
+        </div>
+        <p className="hint">{t("aboutUpdateBody")}</p>
       </section>
 
       <section className="about-section">

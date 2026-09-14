@@ -404,6 +404,10 @@ mod tests {
     use super::*;
     use std::fs;
 
+    // Some tests mutate process-global state (the `SHELL` env var and the
+    // shared binary caches); serialize them against each other.
+    static GLOBAL_STATE_LOCK: Mutex<()> = Mutex::new(());
+
     #[cfg(unix)]
     fn make_executable(p: &Path) {
         use std::os::unix::fs::PermissionsExt;
@@ -491,6 +495,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn resolve_falls_back_to_the_login_shell_path() {
+        let _lock = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // A fake "shell": a POSIX script that ignores its flags and prints
         // a PATH pointing at a temp dir holding a unique fake binary.
         let root = std::env::temp_dir().join(format!(
@@ -522,6 +527,7 @@ mod tests {
 
     #[test]
     fn negative_results_are_cached_and_cleared() {
+        let _lock = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         clear_binary_cache();
         let name = "as-definitely-not-installed-xyz";
         assert!(resolve_binary(name).is_none());

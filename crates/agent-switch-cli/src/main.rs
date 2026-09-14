@@ -14,7 +14,7 @@ use agent_switch_core::{
     claude, codex, engine::Engine, health, launcher, logging, models,
     profile::{Profile, ProviderConfig, ModelConfig, CodexConfig},
     profile_store::ProfileStore,
-    runtime, sessions, settings::Settings, validation,
+    runtime, sessions, settings::Settings, update, validation,
 };
 
 #[derive(Parser)]
@@ -105,14 +105,30 @@ enum Command {
         #[arg(short, long)]
         edit: bool,
     },
+    /// Check the official releases and self-update the CLI binary in
+    /// place (`--check` only reports)
+    Update {
+        /// Only check and report; do not download or replace anything
+        #[arg(short, long)]
+        check: bool,
+    },
 }
 
 fn main() {
+    // A Windows self-update leaves "<binary>.old" that the next launch
+    // can finally delete.
+    if let Ok(exe) = std::env::current_exe() {
+        update::remove_stale_old(&exe);
+    }
     let cli = Cli::parse();
     let store = ProfileStore::new();
     // File logging for troubleshooting (silent on failure; the log file is
     // shared with the GUI's log viewer).
     logging::init(&store.root);
+    // New-version notice on every launch (never blocks the command).
+    if !matches!(cli.command, Some(Command::Update { .. })) {
+        maybe_print_update_notice();
+    }
     if let Err(err) = dispatch(cli, &store) {
         logging::error(&format!("cli error: {err:#}"));
         eprintln!("error: {err}");
@@ -152,6 +168,7 @@ fn dispatch(cli: Cli, store: &ProfileStore) -> Result<()> {
         Command::Cleanup => cmd_cleanup(store),
         Command::Logs { lines } => cmd_logs(lines),
         Command::Settings { edit } => cmd_settings(edit),
+        Command::Update { check } => cmd_update(check),
     }
 }
 
@@ -169,7 +186,7 @@ fn print_guide() {
     println!("Sessions:   sessions");
     println!("Launch:     run <profile> [-- <workspace>] [-- <extra CLI args>]");
     println!("            login <profile>        official profiles only (subscription)");
-    println!("System:     init   doctor   cleanup   logs [n]   settings [--edit]");
+    println!("System:     init   doctor   cleanup   logs [n]   settings [--edit]   update");
     println!();
     println!("Run 'agent-switch <command> --help' for details on one command.");
 }
@@ -925,4 +942,122 @@ fn cmd_settings(edit: bool) -> Result<()> {
         t => println!("terminal: {t}"),
     }
     Ok(())
+}
+
+/// New-version notice on every launch (the user opted in: no forced
+/// upgrade, but the notice must appear each time a newer version exists).
+/// Never blocks the command: the 6 h check cache makes repeated launches
+/// cost one tiny file read, and the network is capped at 2.5 s. Set
+/// AGENT_SWITCH_NO_UPDATE_CHECK=1 to disable it entirely.
+fn maybe_print_update_notice() {
+    if std::env::var_os("AGENT_SWITCH_NO_UPDATE_CHECK").is_some() {
+        return;
+    }
+    match update::check(false, std::time::Duration::from_millis(2500)) {
+        update::CheckOutcome::Known { release, .. }
+            if update::is_newer(&release.tag_name) =>
+        {
+            eprintln!(
+                "\nnote: agent-switch {} is available (you have {}) — run `agent-switch update`",
+                release.version(),
+                update::current_version(),
+            );
+        }
+        _ => {}
+    }
+}
+
+/// The manual install command for this platform (shown when the release
+/// ships no package matching this machine).
+fn manual_install_command() -> &'static str {
+    if cfg!(windows) {
+        "irm https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.ps1 | iex"
+    } else {
+        "curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/install.sh | sh"
+    }
+}
+
+/// `update` — check the official releases and self-update the CLI binary
+/// in place. `--check` only reports.
+fn cmd_update(check_only: bool) -> Result<()> {
+    println!("Current version: {}", update::current_version());
+    match update::check(true, std::time::Duration::from_secs(10)) {
+        update::CheckOutcome::Unavailable => {
+            bail!("could not reach the release API — check the network and retry");
+        }
+        update::CheckOutcome::Known { release, cached } => {
+            println!(
+                "Latest release:  {}{}",
+                release.tag_name,
+                if cached { " (cached)" } else { "" }
+            );
+            if !update::is_newer(&release.tag_name) {
+                println!("Already up to date.");
+                return Ok(());
+            }
+            if check_only {
+                println!("Update available.");
+                return Ok(());
+            }
+            let asset = update::asset_for(&release, update::PackageKind::Cli).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no CLI package for this platform in {} — install manually:\n  {}",
+                    release.tag_name,
+                    manual_install_command()
+                )
+            })?;
+            let dir = std::env::temp_dir().join(format!(
+                "agent-switch-update-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir)?;
+            let zip_path = dir.join(&asset.name);
+            let new_bin =
+                dir.join(if cfg!(windows) { "agent-switch.exe" } else { "agent-switch" });
+
+            eprintln!("Downloading {} ...", asset.name);
+            update::download(
+                &asset.browser_download_url,
+                &zip_path,
+                |done, total| {
+                    let pct = done
+                        .saturating_mul(100)
+                        .checked_div(total.max(1))
+                        .unwrap_or(0)
+                        .min(100);
+                    if total > 0 {
+                        eprint!("\r  {done:>12} / {total} bytes ({pct}%)");
+                    } else {
+                        eprint!("\r  {done:>12} bytes");
+                    }
+                },
+            )
+            .context("download failed")?;
+            eprintln!();
+
+            match update::verify_against_sums(&release, &asset.name, &zip_path)? {
+                Some(digest) => eprintln!("SHA-256 verified: {digest}"),
+                None => eprintln!("note: no checksum published for this asset — verification skipped"),
+            }
+
+            update::extract_cli_binary(&zip_path, &new_bin)
+                .context("extracting the zip failed")?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&new_bin, std::fs::Permissions::from_mode(0o755))?;
+            }
+
+            let current =
+                std::env::current_exe().context("cannot determine the current binary path")?;
+            update::replace_binary(&current, &new_bin)
+                .context("replacing the binary failed")?;
+            let _ = std::fs::remove_dir_all(&dir);
+
+            println!("Updated {} → {}", current.display(), release.version());
+            #[cfg(windows)]
+            println!("(the previous binary is cleaned up on the next start)");
+            Ok(())
+        }
+    }
 }

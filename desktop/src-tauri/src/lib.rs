@@ -30,6 +30,9 @@ pub fn run() {
             commands::save_settings,
             commands::get_logs,
             commands::detect_terminals,
+            commands::check_for_update,
+            commands::start_update,
+            commands::exit_app,
         ])
         .setup(|app| {
             // File logging for troubleshooting (the GUI's log viewer and

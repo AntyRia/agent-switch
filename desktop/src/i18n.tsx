@@ -226,6 +226,25 @@ const EN = {
     "linux.do — an open technical community; thank you for the discussions and feedback.",
   aboutThanksHyperRoute:
     "HyperRoute — model relay (GPT / Claude) that works out of the box; thank you for the support.",
+  // Built-in updates
+  aboutUpdateTitle: "Updates",
+  aboutUpdateBody:
+    "Agent Switch checks the official GitHub releases for new versions. An update replaces the app itself only — your providers, sessions and keys are kept.",
+  updateCheck: "Check for updates",
+  updateChecking: "Checking…",
+  updateLatest: "You are on the latest version (v{v}).",
+  updateUnreachable: "Could not reach the update server — try again later.",
+  updateCheckFail: "Update check failed: {err}",
+  updateModalTitle: "New version available",
+  updateModalBody:
+    "Agent Switch v{latest} has been published. Update now? Your providers, sessions and keys are not touched.",
+  updateLater: "Later",
+  updateNow: "Update now",
+  updateRetry: "Retry",
+  updateDownloading: "Downloading update… {pct}%",
+  updateFinishing: "Verifying and preparing restart…",
+  updateRestart: "Update complete — restarting…",
+  updateFail: "Update failed: {err}",
 } as const;
 
 export type TKey = keyof typeof EN;
@@ -443,6 +462,25 @@ const ZH: Record<TKey, string> = {
     "linux.do —— 开放的开源技术社区，感谢大家一直以来的讨论与反馈。",
   aboutThanksHyperRoute:
     "HyperRoute · 超路由 —— 开箱即用的模型中转（GPT / Claude），感谢支持。",
+  // 内置更新
+  aboutUpdateTitle: "版本更新",
+  aboutUpdateBody:
+    "Agent Switch 会检查 GitHub 官方发布的新版本。更新只替换应用本身——你的供应商、会话与密钥全部保留。",
+  updateCheck: "检查更新",
+  updateChecking: "检查中…",
+  updateLatest: "当前已是最新版本（v{v}）。",
+  updateUnreachable: "无法连接更新服务，请稍后再试。",
+  updateCheckFail: "检查更新失败：{err}",
+  updateModalTitle: "发现新版本",
+  updateModalBody:
+    "Agent Switch v{latest} 已发布。现在更新吗？你的供应商、会话与密钥不受影响。",
+  updateLater: "稍后",
+  updateNow: "立即更新",
+  updateRetry: "重试",
+  updateDownloading: "正在下载更新… {pct}%",
+  updateFinishing: "正在校验并准备重启…",
+  updateRestart: "更新完成，正在重启…",
+  updateFail: "更新失败：{err}",
 };
 
 interface I18nValue {
