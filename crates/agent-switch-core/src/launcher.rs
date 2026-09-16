@@ -422,7 +422,11 @@ fn write_start_script(
         // `&` (call operator) is required for a quoted command path.
         s.push_str(&format!("& '{}'{}\n", ps_quote(&bin), arg_suffix));
         let path = dir.join(format!("{stem}.ps1"));
-        std::fs::write(&path, s)?;
+        // Windows PowerShell 5.1 decodes a BOM-less .ps1 using the system
+        // ANSI codepage (GBK on a Chinese Windows), which turns a non-ASCII
+        // workspace path into mojibake and makes Set-Location fail. The
+        // UTF-8 BOM forces UTF-8 decoding; PowerShell 7 reads it the same.
+        std::fs::write(&path, format!("\u{feff}{s}"))?;
         Ok(path)
     } else {
         let mut s = String::from("#!/bin/sh\n");
@@ -664,6 +668,30 @@ mod tests {
         assert_eq!(
             launch.env,
             vec![("OPENAI_API_KEY".to_string(), "sk-script-secret".to_string())]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_start_script_is_utf8_with_bom() {
+        // Windows PowerShell 5.1 reads a BOM-less .ps1 as the system ANSI
+        // codepage (GBK on a Chinese Windows), mangling a non-ASCII
+        // workspace path into mojibake and failing Set-Location. The script
+        // must carry a UTF-8 BOM so the path round-trips correctly.
+        let dir = std::env::temp_dir().join(format!(
+            "as-script-bom-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let p = profile("codex", Some("sk-bom".into()), None, None);
+        let launch =
+            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+        let bytes = std::fs::read(&launch.script_path).unwrap();
+        assert!(
+            bytes.starts_with(b"\xef\xbb\xbf"),
+            "start.ps1 must begin with a UTF-8 BOM (Windows PowerShell 5.1 would otherwise decode it as the ANSI codepage)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
