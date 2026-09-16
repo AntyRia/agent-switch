@@ -541,19 +541,20 @@ pub async fn launch_profile(id: String, workspace: Option<String>) -> Result<Lau
         Some(w) => PathBuf::from(w),
         None => std::env::current_dir().map_err(|e| e.to_string())?,
     };
-    // Codex only: before a NEW conversation, refresh the profile's model
-    // list from the server (additive merge, persisted in place). The
-    // merged list feeds the model catalog, which is what the TUI's
-    // /model switcher offers. Never blocks the launch — a failure is
-    // just a warning, the stored list is used as-is.
-    let (profile, sync_note) = if profile.engine() == Engine::Codex {
-        match agent_switch_core::models::sync_profile_models(&store, &profile) {
-            Ok(r) => r,
-            Err(_) => (profile, None),
-        }
-    } else {
-        (profile, None)
-    };
+    // Codex only: keep the profile's model list fresh so the TUI /model
+    // catalog stays current. This must NEVER block the launch on a network
+    // round-trip — a slow or hung relay would otherwise stall the terminal
+    // open for up to the fetch timeout — so it runs on a detached thread and
+    // writes the refreshed list (atomically) for the NEXT launch. This launch
+    // uses the stored list as-is; the "fetch models" button in the editor
+    // still refreshes eagerly when the user wants to.
+    if profile.engine() == Engine::Codex && !profile.is_official() {
+        let store_bg = store.clone();
+        let profile_bg = profile.clone();
+        std::thread::spawn(move || {
+            let _ = agent_switch_core::models::sync_profile_models(&store_bg, &profile_bg);
+        });
+    }
     // Global launch settings (dangerous-mode flag, proxy env, pinned
     // terminal) apply to every launch.
     let settings = Settings::load();
@@ -567,21 +568,15 @@ pub async fn launch_profile(id: String, workspace: Option<String>) -> Result<Lau
     )
     .map_err(|e| e.to_string())?;
     // The key travels in the terminal process environment only — it is not
-    // written to the start script (spec §9). A terminal-open failure wins
-    // over the fallback note, which wins over the sync note in `warning`.
+    // written to the start script (spec §9).
     let warning =
         match launcher::open_in_system_terminal(&launch.script_path, &workspace, &launch.env, &settings.terminal)
         {
-            Ok(outcome) => {
-                if outcome.used_fallback {
-                    Some(format!(
-                        "configured terminal unavailable; opened in '{}' instead",
-                        outcome.label
-                    ))
-                } else {
-                    sync_note
-                }
-            }
+            Ok(outcome) if outcome.used_fallback => Some(format!(
+                "configured terminal unavailable; opened in '{}' instead",
+                outcome.label
+            )),
+            Ok(_) => None,
             Err(e) => Some(e.to_string()),
         };
     Ok(LaunchOut {
@@ -804,29 +799,39 @@ pub async fn get_status(force: Option<bool>) -> Result<StatusOut, String> {
         // missing for up to the resolver's negative TTL.
         resolve::clear_binary_cache();
     }
-    let guard = STATUS_CACHE.lock().ok();
+    // Cache read: hold the lock only long enough to peek at the entry, then
+    // drop it before the expensive probes so a concurrent get_status is never
+    // parked behind a node spawn.
     if !force {
-        if let Some(ref cache) = guard {
-            if let Some((t, s)) = &**cache {
-                if t.elapsed() < STATUS_TTL {
-                    // Cheap fields stay fresh; only the version probes are
-                    // cached.
-                    let profiles_count = ProfileStore::new()
-                        .list()
-                        .map(|v| v.len() as u64)
-                        .unwrap_or(0);
-                    return Ok(StatusOut {
-                        profiles_count,
-                        ..s.clone()
-                    });
-                }
+        if let Some((fresh, s)) = STATUS_CACHE
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|(t, s)| (t.elapsed() < STATUS_TTL, s.clone())))
+        {
+            if fresh {
+                // Cheap fields stay fresh; only the version probes are cached.
+                let profiles_count = ProfileStore::new()
+                    .list()
+                    .map(|v| v.len() as u64)
+                    .unwrap_or(0);
+                return Ok(StatusOut {
+                    profiles_count,
+                    ..s
+                });
             }
         }
     }
-    let codex_found = codex::find_codex().is_ok();
-    let codex_version = codex::codex_version();
-    let claude_found = claude::find_claude().is_ok();
-    let claude_version = claude::claude_version();
+    // Probe both CLIs in parallel: each version probe spawns a node process
+    // (and re-runs the cached resolver), so running codex and claude on
+    // scoped threads concurrently halves an uncached read instead of summing
+    // the two spawns. The status-cache lock is not held while they run.
+    let (codex_found, codex_version, claude_found, claude_version) = std::thread::scope(|s| {
+        let codex = s.spawn(|| (codex::find_codex().is_ok(), codex::codex_version()));
+        let claude = s.spawn(|| (claude::find_claude().is_ok(), claude::claude_version()));
+        let (codex_found, codex_version) = codex.join().unwrap_or((false, None));
+        let (claude_found, claude_version) = claude.join().unwrap_or((false, None));
+        (codex_found, codex_version, claude_found, claude_version)
+    });
     let config_dir = config_root().to_string_lossy().into_owned();
     let profiles_count = ProfileStore::new()
         .list()
@@ -841,7 +846,8 @@ pub async fn get_status(force: Option<bool>) -> Result<StatusOut, String> {
         profiles_count,
         version: env!("CARGO_PKG_VERSION").to_string(),
     };
-    if let Some(mut cache) = guard {
+    // Cache write: re-lock briefly to publish the fresh probes.
+    if let Ok(mut cache) = STATUS_CACHE.lock() {
         *cache = Some((Instant::now(), out.clone()));
     }
     Ok(out)

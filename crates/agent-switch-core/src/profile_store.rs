@@ -25,6 +25,7 @@ pub fn config_root() -> PathBuf {
 }
 
 /// File-backed profile store: one TOML file per profile in `profiles/`.
+#[derive(Clone)]
 pub struct ProfileStore {
     pub root: PathBuf,
 }

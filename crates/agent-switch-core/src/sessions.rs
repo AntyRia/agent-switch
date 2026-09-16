@@ -49,6 +49,53 @@ const PREVIEW_CAP: usize = 120;
 /// All sessions across every `runtime/<profile-id>` home, newest first.
 pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
     let mut out = Vec::new();
+    for (path, engine, profile_id) in session_file_entries(store)? {
+        if let Some(s) = session_from_file(&path, engine, &profile_id) {
+            out.push(s);
+        }
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    Ok(out)
+}
+
+/// Find one session by id across all homes.
+///
+/// The id the UI reports is normally the transcript's file name (Claude:
+/// `<session-id>.jsonl`; Codex: the trailing uuid of the rollout stem), so we
+/// first narrow to the file whose NAME already matches and parse only that —
+/// instead of re-reading up to 400 head lines of every session in the pool on
+/// each pin / resume / title / delete. If no name-matching file parses to the
+/// requested id (a rare content-derived-id mismatch) we fall back to the full
+/// scan so the answer is identical to what the pool itself lists.
+pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
+    for (path, engine, profile_id) in session_file_entries(store)? {
+        let name_matches = match engine {
+            Engine::Claude => file_stem(&path) == session_id,
+            Engine::Codex => rollout_session_id(&file_stem(&path)) == session_id,
+        };
+        if !name_matches {
+            continue;
+        }
+        if let Some(s) = session_from_file(&path, engine, &profile_id) {
+            if s.session_id == session_id {
+                return Ok(s);
+            }
+        }
+    }
+    for s in list_sessions(store)? {
+        if s.session_id == session_id {
+            return Ok(s);
+        }
+    }
+    Err(Error::Other(format!("session not found: {session_id}")))
+}
+
+/// Enumerate every session file as `(path, engine, profile_id)` without
+/// reading any transcript content. `list_sessions` maps these through
+/// `session_from_file`; `find_session` uses them to narrow to the one file
+/// whose name matches before paying for a full parse.
+fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, String)>> {
+    let mut out = Vec::new();
     let root = store.runtime_dir();
     if !root.is_dir() {
         return Ok(out);
@@ -75,34 +122,28 @@ pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
                 Engine::Codex => session_files_codex(&home),
             };
             for path in files {
-                let values = read_head_lines(&path);
-                let session = match engine {
-                    Engine::Claude => parse_claude_session(&path, &values),
-                    Engine::Codex => parse_codex_session(&path, &values),
-                };
-                if let Some(mut s) = session {
-                    s.profile_id = profile_id.clone();
-                    s.engine = engine;
-                    s.modified = std::fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    out.push(s);
-                }
+                out.push((path, engine, profile_id.clone()));
             }
         }
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
     Ok(out)
 }
 
-/// Find one session by id across all homes.
-pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
-    for s in list_sessions(store)? {
-        if s.session_id == session_id {
-            return Ok(s);
-        }
-    }
-    Err(Error::Other(format!("session not found: {session_id}")))
+/// Parse one transcript file into a `Session`, filling in the profile id,
+/// engine and file mtime. Returns `None` for an unparseable file.
+fn session_from_file(path: &Path, engine: Engine, profile_id: &str) -> Option<Session> {
+    let values = read_head_lines(path);
+    let session = match engine {
+        Engine::Claude => parse_claude_session(path, &values),
+        Engine::Codex => parse_codex_session(path, &values),
+    }?;
+    let mut s = session;
+    s.profile_id = profile_id.to_string();
+    s.engine = engine;
+    s.modified = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH);
+    Some(s)
 }
 
 // ---------------------------------------------------------------------------
