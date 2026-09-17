@@ -488,11 +488,23 @@ mod tests {
     #[test]
     fn detect_returns_known_terminals_in_order() {
         let found = detect_terminals();
-        // At least the per-OS default must exist on a dev machine
-        // (Windows: powershell is always there; macOS: Terminal; Linux:
-        // usually at least xterm or x-terminal-emulator).
-        assert!(!found.is_empty());
-        // Labels are unique.
+        // A headless CI runner (e.g. the Linux build) may have no GUI terminal
+        // installed, so the list can legitimately be empty. Assert the invariants
+        // that hold either way: whatever is detected keeps the detection-priority
+        // order, and the labels are unique.
+        let order: Vec<&str> = candidates().iter().map(|(bin, _)| *bin).collect();
+        let mut last = 0;
+        for t in &found {
+            let pos = order
+                .iter()
+                .position(|bin| *bin == t.bin)
+                .expect("detected terminal must be a known candidate");
+            assert!(
+                pos >= last,
+                "terminals must be returned in detection order: {found:?}"
+            );
+            last = pos + 1;
+        }
         let labels: std::collections::HashSet<_> = found.iter().map(|t| t.label.clone()).collect();
         assert_eq!(labels.len(), found.len());
     }
