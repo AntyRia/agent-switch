@@ -210,11 +210,12 @@ pub fn asset_for(release: &Release, kind: PackageKind) -> Option<Asset> {
 /// written.
 pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, u64)) -> Result<u64> {
     let mut file = fs::File::create(dest)?;
-    let resp = ureq::get(url)
+    let resp = client_for(url)
+        .get(url)
         .timeout(DOWNLOAD_TIMEOUT)
         .set("User-Agent", USER_AGENT)
         .call()
-        .map_err(|e| Error::Other(format!("download failed: {e}")))?;
+        .map_err(|e| Error::Other(download_error(&e)))?;
     let total = resp
         .header("content-length")
         .and_then(|s| s.parse::<u64>().ok())
@@ -225,7 +226,9 @@ pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, u64)) -> R
     loop {
         let n = reader
             .read(&mut buf)
-            .map_err(|e| Error::Other(format!("download failed: {e}")))?;
+            .map_err(|e| Error::Other(format!(
+                "the download was interrupted: {e} — you can also fetch it manually from {RELEASES_URL}"
+            )))?;
         if n == 0 {
             break;
         }
@@ -234,6 +237,170 @@ pub fn download(url: &str, dest: &Path, mut progress: impl FnMut(u64, u64)) -> R
         progress(done, total);
     }
     Ok(done)
+}
+
+/// The HTTP client for a request. Release traffic goes through a proxy when one
+/// is configured (see [`proxy_setting`]), but loopback and `NO_PROXY` hosts
+/// always connect directly — the update e2e test downloads from 127.0.0.1 and
+/// must not be routed through a proxy.
+fn client_for(url: &str) -> ureq::Agent {
+    if let Some(host) = url_host(url) {
+        if is_direct_host(&host) {
+            return ureq::Agent::new();
+        }
+    }
+    match proxy_setting() {
+        Some(url) => proxy_agent(url),
+        None => ureq::Agent::new(),
+    }
+}
+
+/// A proxy-enabled client; falls back to a plain one if the proxy URL is bad.
+/// A bare `host:port` (no scheme) is treated as an HTTP proxy.
+fn proxy_agent(proxy_url: String) -> ureq::Agent {
+    let url = if proxy_url.contains("://") {
+        proxy_url
+    } else {
+        format!("http://{proxy_url}")
+    };
+    match ureq::Proxy::new(url) {
+        Ok(proxy) => ureq::AgentBuilder::new().proxy(proxy).build(),
+        Err(_) => ureq::Agent::new(),
+    }
+}
+
+/// The proxy to use for release downloads, if any.
+///
+/// Explicit environment first (`HTTPS_PROXY` / `ALL_PROXY` / `HTTP_PROXY`,
+/// either case — what the CLI inherits from the shell), then, on Windows, the
+/// Internet Options "system proxy": the value a proxy tool such as Clash
+/// writes in "System Proxy" mode, and the only thing a Start-menu-launched GUI
+/// can see.
+fn proxy_setting() -> Option<String> {
+    const VARS: &[&str] = &[
+        "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy",
+    ];
+    for var in VARS {
+        if let Ok(v) = std::env::var(var) {
+            let v = v.trim();
+            if !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        windows_system_proxy()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+/// The Windows "system proxy" from Internet Settings, as an http proxy URL.
+#[cfg(windows)]
+fn windows_system_proxy() -> Option<String> {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let base = RegKey::predef(HKEY_CURRENT_USER);
+    let key = base
+        .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        .ok()?;
+    let enabled: u32 = key.get_value("ProxyEnable").ok()?;
+    if enabled != 1 {
+        return None;
+    }
+    let server: String = key.get_value("ProxyServer").ok()?;
+    normalize_proxy_server(&server)
+}
+
+/// Turn a raw Windows `ProxyServer` value into a usable http proxy URL. The
+/// common form is a bare `host:port` (e.g. Clash's mixed port), which gets a
+/// scheme; a comma-separated per-host list yields its first entry; a value that
+/// is already a URL is passed through.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn normalize_proxy_server(server: &str) -> Option<String> {
+    let first = server.split(',').next()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+    if first.contains("://") {
+        return Some(first.to_string());
+    }
+    Some(format!("http://{first}"))
+}
+
+/// The (lowercased) host of a URL, without scheme, userinfo, port or path.
+fn url_host(url: &str) -> Option<String> {
+    let after_scheme = url.split_once("://")?.1;
+    let authority = after_scheme.split(['/', '?', '#']).next()?;
+    let hostport = authority.rsplit_once('@').map(|(_, h)| h).unwrap_or(authority);
+    let host = if hostport.starts_with('[') {
+        hostport.split(']').next().unwrap_or("")
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    let host = host.trim().trim_start_matches('[').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// True when `host` must connect directly, never through a proxy: loopback
+/// addresses and anything matching the `NO_PROXY` env var (`*` disables proxy).
+fn is_direct_host(host: &str) -> bool {
+    is_loopback(host) || matches_no_proxy(host)
+}
+
+fn is_loopback(host: &str) -> bool {
+    matches!(host, "localhost" | "::1") || host == "127.0.0.1" || host.starts_with("127.")
+}
+
+fn matches_no_proxy(host: &str) -> bool {
+    for var in ["NO_PROXY", "no_proxy"] {
+        let Ok(v) = std::env::var(var) else {
+            continue;
+        };
+        if v.trim() == "*" {
+            return true;
+        }
+        for entry in v.split(',') {
+            let entry = entry.trim().trim_start_matches('.');
+            if entry.is_empty() {
+                continue;
+            }
+            if host == entry || host.ends_with(&format!(".{entry}")) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A clear, actionable message for a failed release download: states whether a
+/// proxy was in use, and always points at the release page for a manual
+/// download.
+fn download_error(e: &ureq::Error) -> String {
+    let proxy = proxy_setting();
+    let mut msg = if matches!(e, ureq::Error::Transport(_)) {
+        match &proxy {
+            Some(p) => format!(
+                "Could not download the update — the connection failed while using the proxy {p}."
+            ),
+            None => "Could not download the update — the connection to GitHub timed out or was \
+                     refused."
+                .to_string(),
+        }
+    } else {
+        format!("The download failed: {e}.")
+    };
+    msg.push_str(match &proxy {
+        Some(_) => " Make sure that proxy can reach GitHub, or download the package manually from ",
+        None => " If your network needs a proxy to reach GitHub, set one (HTTPS_PROXY, or enable \
+                 your proxy tool's \"System Proxy\" on Windows) and retry; otherwise download the \
+                 package manually from ",
+    });
+    msg.push_str(RELEASES_URL);
+    msg
 }
 
 /// The SHA-256 of a file, lowercase hex.
@@ -476,7 +643,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 fn fetch_latest(timeout: Duration) -> Result<Release> {
-    let text = ureq::get(API_URL)
+    let text = client_for(API_URL)
+        .get(API_URL)
         .timeout(timeout)
         .set("User-Agent", USER_AGENT)
         .call()
@@ -677,5 +845,51 @@ mod tests {
         fs::write(&path, "not json").unwrap();
         assert!(load_cache_at(&path).release.is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn normalize_proxy_server_forms() {
+        // Bare host:port (Clash's mixed port) gets a scheme.
+        assert_eq!(
+            normalize_proxy_server("127.0.0.1:7897").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        // Comma-separated per-host list: the first entry wins.
+        assert_eq!(
+            normalize_proxy_server("127.0.0.1:7897,corp.proxy:8080").as_deref(),
+            Some("http://127.0.0.1:7897")
+        );
+        // A value that is already a URL passes through untouched.
+        assert_eq!(
+            normalize_proxy_server("http://10.0.0.5:1080").as_deref(),
+            Some("http://10.0.0.5:1080")
+        );
+        assert_eq!(normalize_proxy_server(""), None);
+        assert_eq!(normalize_proxy_server("   "), None);
+    }
+
+    #[test]
+    fn url_host_extraction() {
+        assert_eq!(
+            url_host("https://api.github.com/repos/x/releases").as_deref(),
+            Some("api.github.com")
+        );
+        assert_eq!(url_host("http://127.0.0.1:8080/a/b?c=1").as_deref(), Some("127.0.0.1"));
+        assert_eq!(url_host("https://[::1]:8443/x").as_deref(), Some("::1"));
+        assert_eq!(
+            url_host("https://user:pass@example.com/").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(url_host("not a url"), None);
+    }
+
+    #[test]
+    fn loopback_detection() {
+        for host in ["localhost", "127.0.0.1", "127.9.9.9", "::1"] {
+            assert!(is_loopback(host), "{host} should be loopback");
+        }
+        for host in ["github.com", "example.com", "10.0.0.1", "1270.0.0.1"] {
+            assert!(!is_loopback(host), "{host} should not be loopback");
+        }
     }
 }

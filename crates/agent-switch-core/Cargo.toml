@@ -27,3 +27,6 @@ windows-sys = { version = "0.60", features = [
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Diagnostics_ToolHelp",
 ] }
+# Reads the Internet Options "system proxy" (what Clash & friends set in
+# "System Proxy" mode) so the GUI updater can route release downloads through it.
+winreg = "0.50"

@@ -1031,8 +1031,7 @@ fn cmd_update(check_only: bool) -> Result<()> {
                         eprint!("\r  {done:>12} bytes");
                     }
                 },
-            )
-            .context("download failed")?;
+            )?;
             eprintln!();
 
             match update::verify_against_sums(&release, &asset.name, &zip_path)? {

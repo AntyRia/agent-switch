@@ -1020,7 +1020,7 @@ pub fn start_update(app: tauri::AppHandle) -> Result<String, String> {
             serde_json::json!({ "done": done, "total": total }),
         );
     })
-    .map_err(|e| format!("download failed: {e}"))?;
+    .map_err(|e| e.to_string())?;
     match agent_switch_core::update::verify_against_sums(&release, &asset.name, &file)
         .map_err(|e| e.to_string())?
     {
