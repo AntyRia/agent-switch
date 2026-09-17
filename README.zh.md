@@ -175,8 +175,8 @@ curl -fsSL https://raw.githubusercontent.com/AntyRia/agent-switch/main/scripts/i
 
 | 平台 | CLI 安装包 |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.4-x86_64-pc-windows-msvc.zip`（[v0.2.4](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4)） |
-| macOS（Apple 芯片） | `agent-switch-0.2.4-aarch64-apple-darwin.zip` |
+| Windows x64 | `agent-switch-0.2.5-x86_64-pc-windows-msvc.zip`（[v0.2.5](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.5)） |
+| macOS（Apple 芯片） | `agent-switch-0.2.5-aarch64-apple-darwin.zip` |
 | macOS（Intel）/ Linux | 从源码构建 |
 
 习惯手动操作？下载对应 zip 解压后，把 `agent-switch(.exe)` 放到任意
@@ -217,8 +217,8 @@ GUI 提供 Profile 编辑、启动、会话池、设置、日志、
 
 | 平台 | GUI 安装包 |
 | --- | --- |
-| Windows x64 | 使用 [v0.2.4 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4) |
-| macOS（Apple 芯片） | `Agent.Switch_0.2.4_aarch64.dmg`（ad-hoc 签名，未公证） |
+| Windows x64 | 使用 [v0.2.5 Windows 安装包](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.5) |
+| macOS（Apple 芯片） | `Agent.Switch_0.2.5_aarch64.dmg`（ad-hoc 签名，未公证） |
 | macOS（Intel） | 本版本未构建 |
 | Linux | 本版本未构建，请从源码构建 |
 

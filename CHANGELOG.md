@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] - 2026-09-17
+
+### Fixed
+
+- Windows: the per-session start script is now written with a UTF-8 BOM, so
+  workspace paths containing non-ASCII characters (e.g. Chinese) no longer
+  come out garbled and break `Set-Location` when launching from the GUI.
+
+### Performance
+
+- Status checks are faster: the Codex/Claude version probes run in parallel
+  and the cache lock is released while they run.
+- Launches no longer wait on the network: the Codex model-list sync now runs
+  in the background.
+- The Sessions page refresh is faster: transcript heads are streamed and stop
+  reading as soon as the working directory and first message are known, and
+  pools with many sessions parse in parallel.
+
 ## [0.2.4] - 2026-09-13
 
 ### Added

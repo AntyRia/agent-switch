@@ -190,8 +190,8 @@ target names). Check the release's asset list before downloading.
 
 | Platform | CLI package |
 | --- | --- |
-| Windows x64 | `agent-switch-0.2.4-x86_64-pc-windows-msvc.zip` ([v0.2.4](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4)) |
-| macOS (Apple Silicon) | `agent-switch-0.2.4-aarch64-apple-darwin.zip` |
+| Windows x64 | `agent-switch-0.2.5-x86_64-pc-windows-msvc.zip` ([v0.2.5](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.5)) |
+| macOS (Apple Silicon) | `agent-switch-0.2.5-aarch64-apple-darwin.zip` |
 | macOS (Intel) / Linux | Build from source |
 
 Prefer to do it by hand? Download the matching zip, unzip it, and put
@@ -234,8 +234,8 @@ it.
 
 | Platform | GUI package |
 | --- | --- |
-| Windows x64 | Use the [v0.2.4 Windows installers](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.4) |
-| macOS (Apple Silicon) | `Agent.Switch_0.2.4_aarch64.dmg` (ad-hoc signed, not notarized) |
+| Windows x64 | Use the [v0.2.5 Windows installers](https://github.com/AntyRia/agent-switch/releases/tag/v0.2.5) |
+| macOS (Apple Silicon) | `Agent.Switch_0.2.5_aarch64.dmg` (ad-hoc signed, not notarized) |
 | macOS (Intel) | Not built by this release |
 | Linux | Not built by this release; build from source |
 
