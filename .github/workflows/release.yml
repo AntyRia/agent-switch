@@ -311,6 +311,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      # gh release download resolves the tag through a local git repo, so the
+      # repo must be checked out even though this step only reads the assets.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Merge SHA256SUMS.txt
         env:
           GH_TOKEN: ${{ github.token }}
@@ -349,6 +354,11 @@ jobs:
     env:
       RELEASE_TAG: ${{ github.ref_name }}
     steps:
+      # Same as checksums: gh release edit needs a checked-out git repo to
+      # resolve the tag, so this job checks out even though it runs no build.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
