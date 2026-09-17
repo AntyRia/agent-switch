@@ -46,14 +46,50 @@ const MAX_LINES: usize = 400;
 /// Preview length cap (chars).
 const PREVIEW_CAP: usize = 120;
 
+/// Below this many transcripts the per-file work is so small that spawning
+/// threads costs more than it saves, so we parse serially.
+const PARALLEL_PARSE_MIN: usize = 8;
+
 /// All sessions across every `runtime/<profile-id>` home, newest first.
+///
+/// Each transcript's head is parsed independently and the final order is by
+/// mtime (order-independent), so for larger pools the reads run on a bounded
+/// set of scoped threads — one worker per core, each handling a slice of the
+/// files. This is the hot path behind the Sessions page's 4 s poll.
 pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
-    let mut out = Vec::new();
-    for (path, engine, profile_id) in session_file_entries(store)? {
-        if let Some(s) = session_from_file(&path, engine, &profile_id) {
-            out.push(s);
-        }
-    }
+    let entries = session_file_entries(store)?;
+    let mut out: Vec<Session> = if entries.len() <= PARALLEL_PARSE_MIN {
+        entries
+            .into_iter()
+            .filter_map(|(path, engine, profile_id)| {
+                session_from_file(&path, engine, &profile_id)
+            })
+            .collect()
+    } else {
+        let workers = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(2)
+            .min(entries.len());
+        let per_worker = (entries.len() + workers - 1) / workers;
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for chunk in entries.chunks(per_worker) {
+                let chunk = chunk.to_vec();
+                handles.push(s.spawn(move || {
+                    chunk
+                        .into_iter()
+                        .filter_map(|(path, engine, profile_id)| {
+                            session_from_file(&path, engine, &profile_id)
+                        })
+                        .collect::<Vec<_>>()
+                }));
+            }
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect()
+        })
+    };
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
     Ok(out)
 }
@@ -132,10 +168,9 @@ fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, St
 /// Parse one transcript file into a `Session`, filling in the profile id,
 /// engine and file mtime. Returns `None` for an unparseable file.
 fn session_from_file(path: &Path, engine: Engine, profile_id: &str) -> Option<Session> {
-    let values = read_head_lines(path);
     let session = match engine {
-        Engine::Claude => parse_claude_session(path, &values),
-        Engine::Codex => parse_codex_session(path, &values),
+        Engine::Claude => parse_claude_session(path),
+        Engine::Codex => parse_codex_session(path),
     }?;
     let mut s = session;
     s.profile_id = profile_id.to_string();
@@ -317,6 +352,10 @@ pub fn open_session_ids(store: &ProfileStore) -> std::collections::HashSet<Strin
 
 /// Command line of every running process (empty when the scan fails —
 /// the mtime grace rule then keeps the state safe, it just lags).
+///
+/// Called exactly once per `open_session_ids` (i.e. once per Sessions-page
+/// poll). It is deliberately NOT cached: a brief stale snapshot would make a
+/// freshly-spawned CLI invisible for its TTL, and the scan itself is a few ms.
 fn process_command_lines() -> Vec<String> {
     #[cfg(windows)]
     {
@@ -691,49 +730,45 @@ fn jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// First N lines of a .jsonl file as JSON values (bad lines are skipped).
-fn read_head_lines(path: &Path) -> Vec<serde_json::Value> {
-    let Ok(file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    use std::io::BufRead;
-    std::io::BufReader::new(file)
-        .lines()
-        .take(MAX_LINES)
-        .filter_map(|l| l.ok())
-        .filter_map(|l| serde_json::from_str(&l).ok())
-        .collect()
-}
-
 /// Claude transcript: each record carries top-level `sessionId`/`cwd`; the
 /// first `type:"user"` record's message is the preview.
-fn parse_claude_session(path: &Path, values: &[serde_json::Value]) -> Option<Session> {
+///
+/// The head is *streamed*, not read wholesale: parsing stops as soon as both
+/// the cwd and the first user message are known, so a well-behaved transcript
+/// costs a handful of lines instead of the full `MAX_LINES`. This is the hot
+/// path behind the Sessions page's 4 s poll.
+fn parse_claude_session(path: &Path) -> Option<Session> {
     let fallback_id = file_stem(path);
     let mut session_id = fallback_id.clone();
     let mut cwd: Option<String> = None;
     let mut preview = String::new();
-    for v in values {
-        if session_id == fallback_id {
-            if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
-                if !sid.is_empty() {
-                    session_id = sid.to_string();
+    if let Ok(file) = std::fs::File::open(path) {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(file).lines().take(MAX_LINES) {
+            let Ok(line) = line else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if session_id == fallback_id {
+                if let Some(sid) = v.get("sessionId").and_then(|x| x.as_str()) {
+                    if !sid.is_empty() {
+                        session_id = sid.to_string();
+                    }
                 }
             }
-        }
-        if cwd.is_none() {
-            cwd = v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string());
-        }
-        if preview.is_empty()
-            && v.get("type").and_then(|x| x.as_str()) == Some("user")
-        {
-            if let Some(msg) = v.get("message") {
-                if let Some(text) = extract_message_text(msg) {
-                    preview = text;
+            if cwd.is_none() {
+                cwd = v.get("cwd").and_then(|x| x.as_str()).map(|s| s.to_string());
+            }
+            if preview.is_empty() && v.get("type").and_then(|x| x.as_str()) == Some("user") {
+                if let Some(msg) = v.get("message") {
+                    if let Some(text) = extract_message_text(msg) {
+                        preview = text;
+                    }
                 }
             }
-        }
-        if cwd.is_some() && !preview.is_empty() {
-            break;
+            if cwd.is_some() && !preview.is_empty() {
+                break;
+            }
         }
     }
     Some(Session {
@@ -748,45 +783,55 @@ fn parse_claude_session(path: &Path, values: &[serde_json::Value]) -> Option<Ses
 
 /// Codex rollout: the first line is `session_meta` (payload.id / payload.cwd);
 /// user messages arrive as `response_item` with payload.type "message".
-fn parse_codex_session(path: &Path, values: &[serde_json::Value]) -> Option<Session> {
+///
+/// Streamed like `parse_claude_session`: the read stops once the metadata and
+/// the first user message are both captured.
+fn parse_codex_session(path: &Path) -> Option<Session> {
     let fallback_id = rollout_session_id(&file_stem(path));
     let mut session_id = fallback_id.clone();
     let mut cwd: Option<String> = None;
     let mut preview = String::new();
-    for v in values {
-        match v.get("type").and_then(|x| x.as_str()) {
-            Some("session_meta") => {
-                let p = v.get("payload");
-                if let Some(id) = p.and_then(|p| p.get("id")).and_then(|x| x.as_str()) {
-                    if !id.is_empty() {
-                        session_id = id.to_string();
+    if let Ok(file) = std::fs::File::open(path) {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(file).lines().take(MAX_LINES) {
+            let Ok(line) = line else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            match v.get("type").and_then(|x| x.as_str()) {
+                Some("session_meta") => {
+                    let p = v.get("payload");
+                    if let Some(id) = p.and_then(|p| p.get("id")).and_then(|x| x.as_str()) {
+                        if !id.is_empty() {
+                            session_id = id.to_string();
+                        }
+                    }
+                    if cwd.is_none() {
+                        cwd = p
+                            .and_then(|p| p.get("cwd"))
+                            .and_then(|x| x.as_str())
+                            .map(|s| s.to_string());
                     }
                 }
-                if cwd.is_none() {
-                    cwd = p
-                        .and_then(|p| p.get("cwd"))
-                        .and_then(|x| x.as_str())
-                        .map(|s| s.to_string());
-                }
-            }
-            Some("response_item") if preview.is_empty() => {
-                if let Some(p) = v.get("payload") {
-                    let is_user_message = p
-                        .get("type")
-                        .and_then(|x| x.as_str())
-                        == Some("message")
-                        && p.get("role").and_then(|x| x.as_str()) == Some("user");
-                    if is_user_message {
-                        if let Some(text) = extract_message_text(p) {
-                            preview = text;
+                Some("response_item") if preview.is_empty() => {
+                    if let Some(p) = v.get("payload") {
+                        let is_user_message = p
+                            .get("type")
+                            .and_then(|x| x.as_str())
+                            == Some("message")
+                            && p.get("role").and_then(|x| x.as_str()) == Some("user");
+                        if is_user_message {
+                            if let Some(text) = extract_message_text(p) {
+                                preview = text;
+                            }
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
-        }
-        if cwd.is_some() && !preview.is_empty() {
-            break;
+            if cwd.is_some() && !preview.is_empty() {
+                break;
+            }
         }
     }
     Some(Session {
