@@ -151,9 +151,11 @@ jobs:
           $Build = Join-Path $env:CARGO_TARGET_DIR "$env:RUST_TARGET/release"
           $Out = Join-Path $env:RUNNER_TEMP 'release'
           New-Item -ItemType Directory -Force -Path $Out | Out-Null
-          Copy-Item (Join-Path $Build "bundle\nsis\Agent Switch_$Version_x64-setup.exe") (Join-Path $Out "Agent.Switch_$Version_x64-setup.exe")
-          Copy-Item (Join-Path $Build "bundle\msi\Agent Switch_$Version_x64_en-US.msi") (Join-Path $Out "Agent.Switch.Setup.$Version.x64.msi")
-          Compress-Archive -Path (Join-Path $Build 'agent-switch.exe') -DestinationPath (Join-Path $Out "agent-switch-$Version-x86_64-pc-windows-msvc.zip") -Force
+          # Braced ${Version}: in PowerShell an unbraced $Version_x64 would be
+          # read as the (undefined) variable "Version_x64" and expand to empty.
+          Copy-Item (Join-Path $Build "bundle\nsis\Agent Switch_${Version}_x64-setup.exe") (Join-Path $Out "Agent.Switch_${Version}_x64-setup.exe")
+          Copy-Item (Join-Path $Build "bundle\msi\Agent Switch_${Version}_x64_en-US.msi") (Join-Path $Out "Agent.Switch.Setup.${Version}.x64.msi")
+          Compress-Archive -Path (Join-Path $Build 'agent-switch.exe') -DestinationPath (Join-Path $Out "agent-switch-${Version}-x86_64-pc-windows-msvc.zip") -Force
           Get-ChildItem $Out | Format-Table Name, Length
       - name: Upload
         shell: pwsh
