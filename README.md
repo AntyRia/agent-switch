@@ -9,6 +9,12 @@ for that profile, without changing your global CLI configuration.
   <b>English</b> | <a href="README.zh.md">简体中文</a>
 </p>
 
+> **Also in VS Code:** the
+> [Agent Switch VS Code extension](https://github.com/AntyRia/agent-switch-vscode)
+> runs the same profiles inside the editor — terminal launches plus an
+> in-editor chat panel, with the same isolation model. It reads the same
+> config root, so profiles work in both unchanged.
+
 - [Overview](#overview)
 - [Features](#features)
 - [Requirements](#requirements)

@@ -8,6 +8,10 @@ profile 驱动多供应商启动器。每个供应商对应一份小小的 TOML 
   <a href="README.md">English</a> | <b>简体中文</b>
 </p>
 
+> **VS Code 扩展版：**[Agent Switch VS Code 扩展](https://github.com/AntyRia/agent-switch-vscode)
+> 在编辑器内使用同一批 profile —— 终端启动 + 编辑器内聊天面板，隔离模型
+> 相同。两者读取同一配置根目录，profile 原样通用。
+
 - [简介](#简介)
 - [功能特性](#功能特性)
 - [运行前提](#运行前提)
