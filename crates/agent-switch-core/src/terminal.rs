@@ -224,6 +224,7 @@ fn spawn(
         // script (keeps the window open, bypasses execution policy).
         let ps: Vec<String> = vec![
             "powershell".into(),
+            "-NoProfile".into(),
             "-NoExit".into(),
             "-ExecutionPolicy".into(),
             "Bypass".into(),

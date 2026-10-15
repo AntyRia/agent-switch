@@ -1,6 +1,6 @@
 [package]
 name = "agent-switch-core"
-version = "0.2.5"
+version = "0.2.6"
 edition = "2021"
 repository = "https://github.com/AntyRia/agent-switch"
 
@@ -19,7 +19,7 @@ sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Process command-line scan for the session "open" detection
-# (sessions::open_session_ids). Windows-only: toolhelp snapshot + PEB reads.
+# (sessions::open_session_ids). Windows-only: Toolhelp + process information.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",

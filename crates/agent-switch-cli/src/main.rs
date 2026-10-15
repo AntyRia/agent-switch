@@ -11,10 +11,14 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 
 use agent_switch_core::{
-    claude, codex, engine::Engine, health, launcher, logging, models,
-    profile::{Profile, ProviderConfig, ModelConfig, CodexConfig},
+    claude, codex,
+    engine::Engine,
+    health, launcher, logging, models,
+    profile::{CodexConfig, ModelConfig, Profile, ProviderConfig},
     profile_store::ProfileStore,
-    runtime, sessions, settings::Settings, update, validation,
+    runtime, sessions,
+    settings::Settings,
+    update, validation,
 };
 
 #[derive(Parser)]
@@ -148,10 +152,7 @@ fn dispatch(cli: Cli, store: &ProfileStore) -> Result<()> {
         Command::Show { profile } => cmd_show(store, &profile),
         Command::Add => cmd_add(store),
         Command::Edit { profile } => cmd_edit(store, &profile),
-        Command::Remove {
-            profile,
-            yes,
-        } => cmd_remove(store, &profile, yes),
+        Command::Remove { profile, yes } => cmd_remove(store, &profile, yes),
         Command::Test { profile } => cmd_test(store, &profile),
         Command::Models { profile } => cmd_models(store, &profile),
         Command::Sessions => cmd_sessions(store),
@@ -160,10 +161,7 @@ fn dispatch(cli: Cli, store: &ProfileStore) -> Result<()> {
             workspace,
             extra_args,
         } => cmd_run(store, &profile, workspace, &extra_args),
-        Command::Login {
-            profile,
-            workspace,
-        } => cmd_login(store, &profile, workspace),
+        Command::Login { profile, workspace } => cmd_login(store, &profile, workspace),
         Command::Doctor => cmd_doctor(store),
         Command::Cleanup => cmd_cleanup(store),
         Command::Logs { lines } => cmd_logs(lines),
@@ -244,7 +242,10 @@ fn cmd_list(store: &ProfileStore) -> Result<()> {
     }
     let header = format!(
         "{:<w1$}  {:<w2$}  {:<w3$}  {}",
-        "ID", "NAME", "CLI", "MODEL",
+        "ID",
+        "NAME",
+        "CLI",
+        "MODEL",
         w1 = id_w,
         w2 = name_w,
         w3 = cli_w
@@ -254,7 +255,10 @@ fn cmd_list(store: &ProfileStore) -> Result<()> {
     for p in &profiles {
         println!(
             "{:<w1$}  {:<w2$}  {:<w3$}  {}",
-            p.id, p.name, p.engine().value(), p.model.default,
+            p.id,
+            p.name,
+            p.engine().value(),
+            p.model.default,
             w1 = id_w,
             w2 = name_w,
             w3 = cli_w
@@ -273,34 +277,19 @@ fn cmd_show(store: &ProfileStore, id: &str) -> Result<()> {
     println!();
     println!("provider.type: {}", p.provider.provider_type);
     println!("provider.base_url: {}", p.provider.base_url);
-    if let Some(env) = p
-        .provider
-        .api_key_env
-        .as_deref()
-        .filter(|e| !e.is_empty())
-    {
+    if let Some(env) = p.provider.api_key_env.as_deref().filter(|e| !e.is_empty()) {
         println!("provider.api_key_env: {env}");
     } else if let Some(key) = p.provider.api_key.as_deref() {
         println!("provider.api_key: {}", mask_key(key));
     } else {
         println!("provider.api_key: (not set)");
     }
-    if let Some(mode) = p
-        .provider
-        .auth_mode
-        .as_deref()
-        .filter(|m| !m.is_empty())
-    {
+    if let Some(mode) = p.provider.auth_mode.as_deref().filter(|m| !m.is_empty()) {
         println!("provider.auth_mode: {mode}");
     }
     println!();
     println!("model.default: {}", p.model.default);
-    if let Some(effort) = p
-        .model
-        .effort
-        .as_deref()
-        .filter(|e| !e.trim().is_empty())
-    {
+    if let Some(effort) = p.model.effort.as_deref().filter(|e| !e.trim().is_empty()) {
         println!("model.effort: {effort}");
     }
     println!();
@@ -360,7 +349,10 @@ fn cmd_add(store: &ProfileStore) -> Result<()> {
     let base_url = if provider_type == "official" {
         // Official: the vendor endpoint is built in; an empty answer keeps
         // the vendor default (recorded for display, never sent as override).
-        let raw = ask_line(&mut lines, "Base URL (official: leave empty for the vendor default):")?;
+        let raw = ask_line(
+            &mut lines,
+            "Base URL (official: leave empty for the vendor default):",
+        )?;
         if raw.is_empty() {
             match cli.as_str() {
                 "claude" => "https://api.anthropic.com".to_string(),
@@ -380,11 +372,17 @@ fn cmd_add(store: &ProfileStore) -> Result<()> {
             "API Key (leave empty only for local servers with no auth):"
         },
     )?;
-    let model = ask_line(&mut lines, "Default model (e.g. gpt-5 / claude-sonnet-4-5):")?;
+    let model = ask_line(
+        &mut lines,
+        "Default model (e.g. gpt-5 / claude-sonnet-4-5):",
+    )?;
     // Key transport is only meaningful for the claude engine, and fixed to
     // the vendor's x-api-key convention for official providers.
     let auth_mode = if cli == "claude" && provider_type != "official" {
-        let raw = ask_line(&mut lines, "Key mode [auth_token/api_key] (default auth_token):")?;
+        let raw = ask_line(
+            &mut lines,
+            "Key mode [auth_token/api_key] (default auth_token):",
+        )?;
         match raw.as_str() {
             "" => None,
             m => Some(m.trim().to_ascii_lowercase()),
@@ -429,9 +427,7 @@ fn cmd_add(store: &ProfileStore) -> Result<()> {
             context_window: None,
             models: Vec::new(),
         },
-        codex: CodexConfig {
-            provider_name,
-        },
+        codex: CodexConfig { provider_name },
         cli,
     };
 
@@ -581,7 +577,11 @@ fn cmd_models(store: &ProfileStore, id: &str) -> Result<()> {
         bail!("no key set — fetching the model list requires a key (subscription login has no list endpoint)");
     }
     // Official claude always speaks the vendor's x-api-key convention.
-    let auth_mode = if p.is_official() { Some("api_key") } else { p.provider.auth_mode.as_deref() };
+    let auth_mode = if p.is_official() {
+        Some("api_key")
+    } else {
+        p.provider.auth_mode.as_deref()
+    };
     let list = models::fetch_models(p.engine(), &p.provider.base_url, &key, auth_mode)?;
     if !list.ok {
         bail!("failed to fetch models: {}", list.message);
@@ -602,6 +602,7 @@ fn cmd_models(store: &ProfileStore, id: &str) -> Result<()> {
 /// `sessions` — the conversation pool across all per-profile runtimes.
 fn cmd_sessions(store: &ProfileStore) -> Result<()> {
     let pool = sessions::list_sessions(store)?;
+    let activity = sessions::session_activities(store);
     if pool.is_empty() {
         println!("no sessions yet — launch a profile first");
         return Ok(());
@@ -611,29 +612,31 @@ fn cmd_sessions(store: &ProfileStore) -> Result<()> {
         id_w = id_w.max(s.profile_id.chars().count());
     }
     let header = format!(
-        "{:<36}  {:<6}  {:<w$}  {:<11}  {}",
-        "SESSION", "CLI", "PROFILE", "LAST ACTIVE", "PREVIEW",
+        "{:<36}  {:<6}  {:<w$}  {:<11}  {:<11}  {}",
+        "SESSION",
+        "CLI",
+        "PROFILE",
+        "STATE",
+        "LAST ACTIVE",
+        "PREVIEW",
         w = id_w
     );
     println!("{header}");
     println!("{}", "-".repeat(header.chars().count()));
     for s in &pool {
         println!(
-            "{:<36}  {:<6}  {:<w$}  {:<11}  {}",
+            "{:<36}  {:<6}  {:<w$}  {:<11}  {:<11}  {}",
             s.session_id,
             s.engine.value(),
             s.profile_id,
+            activity.get(&s.session_id).label(),
             relative_age(s.modified),
             truncate_preview(&s.preview),
             w = id_w
         );
     }
-    println!(
-        "\nresume: agent-switch run <PROFILE> -- --resume <SESSION>  (claude profiles)"
-    );
-    println!(
-        "        agent-switch run <PROFILE> -- resume <SESSION>    (codex profiles)"
-    );
+    println!("\nresume: agent-switch run <PROFILE> -- --resume <SESSION>  (claude profiles)");
+    println!("        agent-switch run <PROFILE> -- resume <SESSION>    (codex profiles)");
     Ok(())
 }
 
@@ -666,16 +669,6 @@ fn truncate_preview(preview: &str) -> String {
 }
 
 /// `run` — the core command: isolated runtime + codex with per-process env.
-/// The session id when `extra_args` resumes a conversation
-/// (codex `resume <id>` / claude `--resume <id>`); None otherwise.
-fn resume_id_from_args(extra_args: &[String]) -> Option<String> {
-    extra_args
-        .iter()
-        .position(|a| a == "resume" || a == "--resume")
-        .and_then(|i| extra_args.get(i + 1))
-        .cloned()
-}
-
 fn cmd_run(
     store: &ProfileStore,
     id: &str,
@@ -713,7 +706,7 @@ fn cmd_run(
     // (stale models removed, never blocks the launch). The refreshed list
     // feeds the generated model catalog, so the TUI's /model switcher
     // offers everything the server still serves.
-    let resume_id = resume_id_from_args(extra_args);
+    let resume_id = sessions::resume_session_id(extra_args);
     let profile = if resume_id.is_none() && engine == Engine::Codex {
         match models::sync_profile_models(store, &profile) {
             Ok((p, note)) => {
@@ -730,13 +723,19 @@ fn cmd_run(
     } else {
         profile
     };
-    if let Some(sid) = &resume_id {
-        // Remember the session as open while this process tree runs it;
-        // the GUI pool reads the same lock.
-        if let Err(e) = sessions::mark_session_open(store, sid) {
-            println!("note: {e}");
+    agent_switch_core::cli_health::ensure_ready(engine)?;
+    let mut effective_args = extra_args.to_vec();
+    let resume_guard = if let Some(sid) = &resume_id {
+        let planned = sessions::resume_arguments(store, sid, engine)?;
+        if planned.first().is_some_and(|arg| arg == "attach") {
+            effective_args = planned;
+            None
+        } else {
+            Some(sessions::SessionOpenGuard::acquire(store, sid)?)
         }
-    }
+    } else {
+        None
+    };
 
     // 2b. Create the isolated runtime, resolve the key.
     let settings = Settings::load();
@@ -764,11 +763,12 @@ fn cmd_run(
         &settings,
         key,
         &workspace,
-        extra_args,
+        &effective_args,
     )?;
 
     // 4. Opportunistic cleanup, quietly.
     let _ = runtime::cleanup(store);
+    drop(resume_guard);
     std::process::exit(code);
 }
 
@@ -833,8 +833,12 @@ fn cmd_doctor(store: &ProfileStore) -> Result<()> {
     let mut ok_all = true;
     if codex::find_codex().is_ok() {
         println!("Codex CLI: ✓ Found");
-        if let Some(v) = codex::codex_version() {
-            println!("Codex Version: {v}");
+        match agent_switch_core::cli_health::ensure_ready(Engine::Codex) {
+            Ok(v) => println!("Codex Version: {v}"),
+            Err(error) => {
+                println!("Codex installation unhealthy: {error}");
+                ok_all = false;
+            }
         }
     } else {
         // Exact spec wording for the not-found case (todo §4.1), plus the
@@ -850,8 +854,12 @@ fn cmd_doctor(store: &ProfileStore) -> Result<()> {
     if claude::find_claude().is_ok() {
         println!();
         println!("Claude CLI: ✓ Found");
-        if let Some(v) = claude::claude_version() {
-            println!("Claude Version: {v}");
+        match agent_switch_core::cli_health::ensure_ready(Engine::Claude) {
+            Ok(v) => println!("Claude Version: {v}"),
+            Err(error) => {
+                println!("Claude installation unhealthy: {error}");
+                ok_all = false;
+            }
         }
     } else {
         println!();
@@ -954,9 +962,7 @@ fn maybe_print_update_notice() {
         return;
     }
     match update::check(false, std::time::Duration::from_millis(2500)) {
-        update::CheckOutcome::Known { release, .. }
-            if update::is_newer(&release.tag_name) =>
-        {
+        update::CheckOutcome::Known { release, .. } if update::is_newer(&release.tag_name) => {
             eprintln!(
                 "\nnote: agent-switch {} is available (you have {}) — run `agent-switch update`",
                 release.version(),
@@ -1006,41 +1012,39 @@ fn cmd_update(check_only: bool) -> Result<()> {
                     manual_install_command()
                 )
             })?;
-            let dir = std::env::temp_dir().join(format!(
-                "agent-switch-update-{}",
-                uuid::Uuid::new_v4()
-            ));
+            let dir =
+                std::env::temp_dir().join(format!("agent-switch-update-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir)?;
             let zip_path = dir.join(&asset.name);
-            let new_bin =
-                dir.join(if cfg!(windows) { "agent-switch.exe" } else { "agent-switch" });
+            let new_bin = dir.join(if cfg!(windows) {
+                "agent-switch.exe"
+            } else {
+                "agent-switch"
+            });
 
             eprintln!("Downloading {} ...", asset.name);
-            update::download(
-                &asset.browser_download_url,
-                &zip_path,
-                |done, total| {
-                    let pct = done
-                        .saturating_mul(100)
-                        .checked_div(total.max(1))
-                        .unwrap_or(0)
-                        .min(100);
-                    if total > 0 {
-                        eprint!("\r  {done:>12} / {total} bytes ({pct}%)");
-                    } else {
-                        eprint!("\r  {done:>12} bytes");
-                    }
-                },
-            )?;
+            update::download(&asset.browser_download_url, &zip_path, |done, total| {
+                let pct = done
+                    .saturating_mul(100)
+                    .checked_div(total.max(1))
+                    .unwrap_or(0)
+                    .min(100);
+                if total > 0 {
+                    eprint!("\r  {done:>12} / {total} bytes ({pct}%)");
+                } else {
+                    eprint!("\r  {done:>12} bytes");
+                }
+            })?;
             eprintln!();
 
             match update::verify_against_sums(&release, &asset.name, &zip_path)? {
                 Some(digest) => eprintln!("SHA-256 verified: {digest}"),
-                None => eprintln!("note: no checksum published for this asset — verification skipped"),
+                None => {
+                    eprintln!("note: no checksum published for this asset — verification skipped")
+                }
             }
 
-            update::extract_cli_binary(&zip_path, &new_bin)
-                .context("extracting the zip failed")?;
+            update::extract_cli_binary(&zip_path, &new_bin).context("extracting the zip failed")?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -1049,8 +1053,7 @@ fn cmd_update(check_only: bool) -> Result<()> {
 
             let current =
                 std::env::current_exe().context("cannot determine the current binary path")?;
-            update::replace_binary(&current, &new_bin)
-                .context("replacing the binary failed")?;
+            update::replace_binary(&current, &new_bin).context("replacing the binary failed")?;
             let _ = std::fs::remove_dir_all(&dir);
 
             println!("Updated {} → {}", current.display(), release.version());

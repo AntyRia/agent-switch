@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.6] - 2026-10-15
+
+### Fixed
+
+- Resume live Claude background sessions with `claude attach` in the same
+  isolated profile home instead of starting a competing `--resume` writer.
+  The GUI offers "Attach background session" while a background owner is live.
+- Detect session ownership from actual agent arguments and Claude's session
+  registry, including process creation identity. Terminal hosts, stopped tabs,
+  fork source transcripts and unrelated prompts no longer keep sessions open.
+  Incomplete scans remain unverified instead of allowing duplicate writers.
+- Validate CLI startup with a successful, time-bounded version probe. Broken npm
+  shims and native-binary placeholders left by a full disk are reported before
+  opening a terminal, and no longer count as healthy installed CLIs.
+- Roll back failed launches and release session locks when their CLI exits,
+  even if the terminal shell remains open. Ownership tokens protect newer locks;
+  CLI resumes now enforce the same exclusive lock as the GUI.
+- Preserve launch warnings in the session UI, protect active transcripts from
+  deletion, and skip PowerShell profiles for predictable terminal startup.
+- Route release downloads through the configured/system proxy and provide
+  clearer network failure messages.
+
 ## [0.2.5] - 2026-09-17
 
 ### Fixed

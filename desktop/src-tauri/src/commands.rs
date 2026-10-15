@@ -256,6 +256,8 @@ pub struct SessionView {
     /// True while a launched terminal still runs this session (the
     /// session can only be resumed again after it is closed).
     pub open: bool,
+    /// closed / starting / running / background / unknown.
+    pub activity: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -322,21 +324,9 @@ fn profile_out(p: &Profile) -> ProfileOut {
         provider: ProviderOut {
             provider_type: p.provider.provider_type.clone(),
             base_url: p.provider.base_url.clone(),
-            api_key: p
-                .provider
-                .api_key
-                .clone()
-                .unwrap_or_default(),
-            api_key_env: p
-                .provider
-                .api_key_env
-                .clone()
-                .filter(|k| !k.is_empty()),
-            auth_mode: p
-                .provider
-                .auth_mode
-                .clone()
-                .filter(|k| !k.is_empty()),
+            api_key: p.provider.api_key.clone().unwrap_or_default(),
+            api_key_env: p.provider.api_key_env.clone().filter(|k| !k.is_empty()),
+            auth_mode: p.provider.auth_mode.clone().filter(|k| !k.is_empty()),
         },
         model: ModelOut {
             default: p.model.default.clone(),
@@ -381,8 +371,7 @@ fn profile_in(p: ProfileIn) -> Profile {
             // Trim entries, drop empties and duplicates (order kept);
             // the stored profile should stay as clean as the input.
             models: {
-                let mut seen: std::collections::HashSet<String> =
-                    std::collections::HashSet::new();
+                let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
                 p.model
                     .models
                     .into_iter()
@@ -405,9 +394,7 @@ fn profile_in(p: ProfileIn) -> Profile {
 /// All parseable profiles, sorted by id.
 #[tauri::command]
 pub async fn list_profiles() -> Result<Vec<ProfileView>, String> {
-    let profiles = ProfileStore::new()
-        .list()
-        .map_err(|e| e.to_string())?;
+    let profiles = ProfileStore::new().list().map_err(|e| e.to_string())?;
     Ok(profiles
         .iter()
         .map(|p| ProfileView {
@@ -424,8 +411,7 @@ pub async fn list_profiles() -> Result<Vec<ProfileView>, String> {
                 .as_deref()
                 .map(|k| !k.is_empty())
                 .unwrap_or(false)
-                || p
-                    .provider
+                || p.provider
                     .api_key_env
                     .as_deref()
                     .map(|k| !k.is_empty())
@@ -437,9 +423,7 @@ pub async fn list_profiles() -> Result<Vec<ProfileView>, String> {
 /// One full profile (real api_key, "" when absent).
 #[tauri::command]
 pub async fn get_profile(id: String) -> Result<ProfileOut, String> {
-    let p = ProfileStore::new()
-        .get(&id)
-        .map_err(|e| e.to_string())?;
+    let p = ProfileStore::new().get(&id).map_err(|e| e.to_string())?;
     Ok(profile_out(&p))
 }
 
@@ -456,7 +440,11 @@ pub async fn save_profile(p: ProfileIn, create: Option<bool>) -> Result<IdOut, S
         return Err(format!("profile already exists: {id}"));
     }
     // old_id == profile.id means "in place update" (no rename bookkeeping).
-    let old = if store.path_for(&id).exists() { Some(id.as_str()) } else { None };
+    let old = if store.path_for(&id).exists() {
+        Some(id.as_str())
+    } else {
+        None
+    };
     store.save(&profile, old).map_err(|e| e.to_string())?;
     Ok(IdOut { id })
 }
@@ -464,14 +452,15 @@ pub async fn save_profile(p: ProfileIn, create: Option<bool>) -> Result<IdOut, S
 /// Delete a profile by id.
 #[tauri::command]
 pub async fn delete_profile(id: String) -> Result<IdOut, String> {
-    ProfileStore::new()
-        .delete(&id)
-        .map_err(|e| e.to_string())?;
+    ProfileStore::new().delete(&id).map_err(|e| e.to_string())?;
     Ok(IdOut { id })
 }
 
 fn resolve_editor_key(literal: &str, env_name: Option<&str>) -> String {
-    env_name.and_then(|name| std::env::var(name).ok()).filter(|v| !v.is_empty()).unwrap_or_else(|| literal.to_string())
+    env_name
+        .and_then(|name| std::env::var(name).ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| literal.to_string())
 }
 
 /// Health-check the GIVEN fields (not a stored profile). The engine picks
@@ -506,22 +495,13 @@ pub async fn fetch_models(m: ModelsInput) -> Result<ModelsOut, String> {
     let key = resolve_editor_key(&m.api_key, m.api_key_env.as_deref());
     let engine = Engine::parse(&m.engine);
     // Official claude always speaks the vendor's x-api-key convention.
-    let auth_mode = if m
-        .provider_type
-        .trim()
-        .eq_ignore_ascii_case("official")
-    {
+    let auth_mode = if m.provider_type.trim().eq_ignore_ascii_case("official") {
         Some("api_key")
     } else {
         m.auth_mode.as_deref()
     };
-    let r = agent_switch_core::models::fetch_models(
-        engine,
-        &m.base_url,
-        &key,
-        auth_mode,
-    )
-    .map_err(|e| e.to_string())?;
+    let r = agent_switch_core::models::fetch_models(engine, &m.base_url, &key, auth_mode)
+        .map_err(|e| e.to_string())?;
     Ok(ModelsOut {
         ok: r.ok,
         message: r.message,
@@ -558,27 +538,24 @@ pub async fn launch_profile(id: String, workspace: Option<String>) -> Result<Lau
     // Global launch settings (dangerous-mode flag, proxy env, pinned
     // terminal) apply to every launch.
     let settings = Settings::load();
-    let launch = launcher::prepare_terminal_launch(
-        &store,
-        &profile,
-        &settings,
-        &workspace,
-        &[],
-        "start",
-    )
-    .map_err(|e| e.to_string())?;
+    let launch =
+        launcher::prepare_terminal_launch(&store, &profile, &settings, &workspace, &[], "start")
+            .map_err(|e| e.to_string())?;
     // The key travels in the terminal process environment only — it is not
     // written to the start script (spec §9).
-    let warning =
-        match launcher::open_in_system_terminal(&launch.script_path, &workspace, &launch.env, &settings.terminal)
-        {
-            Ok(outcome) if outcome.used_fallback => Some(format!(
-                "configured terminal unavailable; opened in '{}' instead",
-                outcome.label
-            )),
-            Ok(_) => None,
-            Err(e) => Some(e.to_string()),
-        };
+    let warning = match launcher::open_in_system_terminal(
+        &launch.script_path,
+        &workspace,
+        &launch.env,
+        &settings.terminal,
+    ) {
+        Ok(outcome) if outcome.used_fallback => Some(format!(
+            "configured terminal unavailable; opened in '{}' instead",
+            outcome.label
+        )),
+        Ok(_) => None,
+        Err(e) => Some(e.to_string()),
+    };
     Ok(LaunchOut {
         runtime_id: launch.runtime_id,
         script_path: launch.script_path.to_string_lossy().into_owned(),
@@ -596,8 +573,8 @@ pub async fn login_profile(id: String) -> Result<LaunchOut, String> {
     let store = ProfileStore::new();
     let profile = store.get(&id).map_err(|e| e.to_string())?;
     let workspace = std::env::current_dir().map_err(|e| e.to_string())?;
-    let launch = launcher::prepare_login(&store, &profile, &workspace)
-        .map_err(|e| e.to_string())?;
+    let launch =
+        launcher::prepare_login(&store, &profile, &workspace).map_err(|e| e.to_string())?;
     let warning = match launcher::open_in_system_terminal(
         &launch.script_path,
         &workspace,
@@ -630,15 +607,12 @@ pub async fn login_profile(id: String) -> Result<LaunchOut, String> {
 pub async fn list_sessions() -> Result<Vec<SessionView>, String> {
     let store = ProfileStore::new();
     let profiles = store.list().unwrap_or_default();
-    let by_id: std::collections::HashMap<&str, &Profile> = profiles
-        .iter()
-        .map(|p| (p.id.as_str(), p))
-        .collect();
-    let pool = agent_switch_core::sessions::list_sessions(&store)
-        .map_err(|e| e.to_string())?;
+    let by_id: std::collections::HashMap<&str, &Profile> =
+        profiles.iter().map(|p| (p.id.as_str(), p)).collect();
+    let pool = agent_switch_core::sessions::list_sessions(&store).map_err(|e| e.to_string())?;
     let meta = agent_switch_core::sessions::load_meta(&store);
     // Sessions still running in a terminal (also prunes dead locks).
-    let open_ids = agent_switch_core::sessions::open_session_ids(&store);
+    let activity = agent_switch_core::sessions::session_activities(&store);
     Ok(pool
         .into_iter()
         .map(|s| {
@@ -663,7 +637,8 @@ pub async fn list_sessions() -> Result<Vec<SessionView>, String> {
                 resumable: p.is_some(),
                 pinned: meta.is_pinned(&s.session_id),
                 title: meta.titles.get(&s.session_id).cloned(),
-                open: open_ids.contains(&s.session_id),
+                open: activity.get(&s.session_id).is_open(),
+                activity: activity.get(&s.session_id).label().to_string(),
             }
         })
         .collect())
@@ -673,20 +648,16 @@ pub async fn list_sessions() -> Result<Vec<SessionView>, String> {
 #[tauri::command]
 pub async fn set_session_pinned(session_id: String, pinned: bool) -> Result<(), String> {
     let store = ProfileStore::new();
-    agent_switch_core::sessions::find_session(&store, &session_id)
-        .map_err(|e| e.to_string())?;
-    agent_switch_core::sessions::set_pinned(&store, &session_id, pinned)
-        .map_err(|e| e.to_string())
+    agent_switch_core::sessions::find_session(&store, &session_id).map_err(|e| e.to_string())?;
+    agent_switch_core::sessions::set_pinned(&store, &session_id, pinned).map_err(|e| e.to_string())
 }
 
 /// Set a session's custom title; an empty title clears it.
 #[tauri::command]
 pub async fn set_session_title(session_id: String, title: String) -> Result<(), String> {
     let store = ProfileStore::new();
-    agent_switch_core::sessions::find_session(&store, &session_id)
-        .map_err(|e| e.to_string())?;
-    agent_switch_core::sessions::set_title(&store, &session_id, &title)
-        .map_err(|e| e.to_string())
+    agent_switch_core::sessions::find_session(&store, &session_id).map_err(|e| e.to_string())?;
+    agent_switch_core::sessions::set_title(&store, &session_id, &title).map_err(|e| e.to_string())
 }
 
 /// Delete a session: removes its transcript file(s) from the profile home
@@ -694,10 +665,8 @@ pub async fn set_session_title(session_id: String, title: String) -> Result<(), 
 #[tauri::command]
 pub async fn delete_session(session_id: String) -> Result<(), String> {
     let store = ProfileStore::new();
-    agent_switch_core::sessions::find_session(&store, &session_id)
-        .map_err(|e| e.to_string())?;
-    agent_switch_core::sessions::delete_session(&store, &session_id)
-        .map_err(|e| e.to_string())?;
+    agent_switch_core::sessions::find_session(&store, &session_id).map_err(|e| e.to_string())?;
+    agent_switch_core::sessions::delete_session(&store, &session_id).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -717,67 +686,17 @@ pub async fn resume_session(session_id: String) -> Result<LaunchOut, String> {
     let store = ProfileStore::new();
     let session = agent_switch_core::sessions::find_session(&store, &session_id)
         .map_err(|e| e.to_string())?;
-    // A session that is still running must not be resumed again — a second
-    // process writing the same transcript would corrupt it.
-    if agent_switch_core::sessions::session_is_open(&store, &session_id) {
-        return Err("session already open: close the running terminal window first".to_string());
-    }
-    let profile = store
-        .get(&session.profile_id)
-        .map_err(|e| format!("profile no longer exists: {e}"))?;
-    let workspace: PathBuf = match session.cwd.as_deref() {
-        Some(c) if Path::new(c).is_dir() => PathBuf::from(c),
-        _ => std::env::current_dir().map_err(|e| e.to_string())?,
-    };
-    // A per-session start-script name keeps the session id visible in the
-    // launched process tree, which is how the "open" state is detected.
-    let stem: String = format!(
-        "resume-{}",
-        session_id
-            .chars()
-            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.')
-            .collect::<String>()
-    );
-    // Global launch settings apply to resumes as well.
-    let settings = Settings::load();
-    let launch = launcher::prepare_terminal_launch(
-        &store,
-        &profile,
-        &settings,
-        &workspace,
-        &session.resume_args(),
-        &stem,
-    )
-    .map_err(|e| e.to_string())?;
-    // Record the session as open. The atomic create_new inside is the
-    // real double-open guard (covers the race between the check above and
-    // now); on a failure the lock already exists, so we must not remove it.
-    if let Err(e) = agent_switch_core::sessions::mark_session_open(&store, &session_id) {
-        return Err(e.to_string());
-    }
-    let warning =
-        match launcher::open_in_system_terminal(&launch.script_path, &workspace, &launch.env, &settings.terminal)
-        {
-            Ok(outcome) => {
-                if outcome.used_fallback {
-                    Some(format!(
-                        "configured terminal unavailable; opened in '{}' instead",
-                        outcome.label
-                    ))
-                } else {
-                    None
-                }
-            }
-            // Nothing was actually launched: release the lock again.
-            Err(e) => {
-                agent_switch_core::sessions::clear_open_lock(&store, &session_id);
-                Some(e.to_string())
-            }
-        };
+    let (launch, outcome) = launcher::resume_in_terminal(&store, &session, &Settings::load())
+        .map_err(|e| e.to_string())?;
     Ok(LaunchOut {
         runtime_id: launch.runtime_id,
         script_path: launch.script_path.to_string_lossy().into_owned(),
-        warning,
+        warning: outcome.used_fallback.then(|| {
+            format!(
+                "configured terminal unavailable; opened in '{}' instead",
+                outcome.label
+            )
+        }),
     })
 }
 
@@ -803,11 +722,10 @@ pub async fn get_status(force: Option<bool>) -> Result<StatusOut, String> {
     // drop it before the expensive probes so a concurrent get_status is never
     // parked behind a node spawn.
     if !force {
-        if let Some((fresh, s)) = STATUS_CACHE
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|(t, s)| (t.elapsed() < STATUS_TTL, s.clone())))
-        {
+        if let Some((fresh, s)) = STATUS_CACHE.lock().ok().and_then(|g| {
+            g.as_ref()
+                .map(|(t, s)| (t.elapsed() < STATUS_TTL, s.clone()))
+        }) {
             if fresh {
                 // Cheap fields stay fresh; only the version probes are cached.
                 let profiles_count = ProfileStore::new()
@@ -826,8 +744,14 @@ pub async fn get_status(force: Option<bool>) -> Result<StatusOut, String> {
     // scoped threads concurrently halves an uncached read instead of summing
     // the two spawns. The status-cache lock is not held while they run.
     let (codex_found, codex_version, claude_found, claude_version) = std::thread::scope(|s| {
-        let codex = s.spawn(|| (codex::find_codex().is_ok(), codex::codex_version()));
-        let claude = s.spawn(|| (claude::find_claude().is_ok(), claude::claude_version()));
+        let codex = s.spawn(|| {
+            let version = codex::codex_version();
+            (version.is_some(), version)
+        });
+        let claude = s.spawn(|| {
+            let version = claude::claude_version();
+            (version.is_some(), version)
+        });
         let (codex_found, codex_version) = codex.join().unwrap_or((false, None));
         let (claude_found, claude_version) = claude.join().unwrap_or((false, None));
         (codex_found, codex_version, claude_found, claude_version)
@@ -979,10 +903,7 @@ pub fn check_for_update(force: Option<bool>) -> Result<UpdateInfo, String> {
 /// The frontend calls exit_app() on success.
 #[tauri::command]
 pub fn start_update(app: tauri::AppHandle) -> Result<String, String> {
-    let release = match agent_switch_core::update::check(
-        true,
-        std::time::Duration::from_secs(10),
-    ) {
+    let release = match agent_switch_core::update::check(true, std::time::Duration::from_secs(10)) {
         agent_switch_core::update::CheckOutcome::Known { release, .. } => release,
         agent_switch_core::update::CheckOutcome::Unavailable => {
             return Err("could not reach the release API — check the network and retry".into())
@@ -991,17 +912,15 @@ pub fn start_update(app: tauri::AppHandle) -> Result<String, String> {
     if !agent_switch_core::update::is_newer(&release.tag_name) {
         return Err("already on the latest version".into());
     }
-    let asset = agent_switch_core::update::asset_for(
-        &release,
-        agent_switch_core::update::PackageKind::Gui,
-    )
-    .ok_or_else(|| {
-        format!(
-            "no packaged build for this platform in {} — download manually: {}",
-            release.tag_name,
-            agent_switch_core::update::RELEASES_URL
-        )
-    })?;
+    let asset =
+        agent_switch_core::update::asset_for(&release, agent_switch_core::update::PackageKind::Gui)
+            .ok_or_else(|| {
+                format!(
+                    "no packaged build for this platform in {} — download manually: {}",
+                    release.tag_name,
+                    agent_switch_core::update::RELEASES_URL
+                )
+            })?;
     let ns = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -1025,15 +944,14 @@ pub fn start_update(app: tauri::AppHandle) -> Result<String, String> {
         .map_err(|e| e.to_string())?
     {
         Some(_) => {}
-        None => {
-            logging::info("update: no published checksum for the asset — skipped verification")
-        }
+        None => logging::info("update: no published checksum for the asset — skipped verification"),
     }
 
     #[cfg(target_os = "macos")]
     {
-        let bundle = agent_switch_core::update::macos_bundle()
-            .ok_or("running outside a packaged .app (dev build) — get the DMG from the release page")?;
+        let bundle = agent_switch_core::update::macos_bundle().ok_or(
+            "running outside a packaged .app (dev build) — get the DMG from the release page",
+        )?;
         agent_switch_core::update::spawn_macos_updater(std::process::id(), &bundle, &file)
             .map_err(|e| format!("failed to start the updater: {e}"))?;
         return Ok("update ready — restarting".into());
@@ -1065,9 +983,7 @@ pub fn exit_app(app: tauri::AppHandle) {
 fn is_toml_change(event: &notify::Event) -> bool {
     let kind_matches = matches!(
         event.kind,
-        notify::EventKind::Create(_)
-            | notify::EventKind::Modify(_)
-            | notify::EventKind::Remove(_)
+        notify::EventKind::Create(_) | notify::EventKind::Modify(_) | notify::EventKind::Remove(_)
     );
     kind_matches
         && event
@@ -1088,11 +1004,13 @@ pub fn spawn_profile_watcher(app_handle: tauri::AppHandle) {
     });
 }
 
-fn run_watcher(app_handle: tauri::AppHandle, profiles_dir: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn run_watcher(
+    app_handle: tauri::AppHandle,
+    profiles_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(profiles_dir)?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let mut watcher =
-        notify::RecommendedWatcher::new(tx, notify::Config::default())?;
+    let mut watcher = notify::RecommendedWatcher::new(tx, notify::Config::default())?;
     watcher.watch(profiles_dir, notify::RecursiveMode::NonRecursive)?;
 
     let debounce = Duration::from_millis(400);

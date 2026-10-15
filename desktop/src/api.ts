@@ -100,9 +100,9 @@ export interface Session {
   pinned: boolean;
   /** Custom display title; null when the preview is the row's label. */
   title: string | null;
-  /** True while a launched terminal still runs this session — it can only
-   *  be resumed again after that terminal window is closed. */
+  /** Active or unverified owner; background owners can be attached. */
   open: boolean;
+  activity: "closed" | "starting" | "running" | "background" | "unknown";
 }
 
 export interface Status {

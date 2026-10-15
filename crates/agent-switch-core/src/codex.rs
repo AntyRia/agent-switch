@@ -254,22 +254,7 @@ pub fn needs_cmd_wrap(path: &Path) -> bool {
 /// `codex --version`, first line of output (None when codex is missing).
 pub fn codex_version() -> Option<String> {
     let path = find_codex().ok()?;
-    let mut cmd = if needs_cmd_wrap(&path) {
-        let mut c = std::process::Command::new("cmd.exe");
-        c.arg("/C").arg(&path).arg("--version");
-        c
-    } else {
-        let mut c = std::process::Command::new(&path);
-        c.arg("--version");
-        c
-    };
-    crate::resolve::prepend_bin_dir_to_path(&mut cmd, &path);
-    let output = cmd.output().ok()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .map(|l| l.trim().to_string())
-        .find(|l| !l.is_empty())
+    crate::cli_health::version(crate::engine::Engine::Codex, &path).ok()
 }
 
 #[cfg(test)]
@@ -304,7 +289,10 @@ mod tests {
 
     #[test]
     fn config_shape_is_correct() {
-        let cfg = generate_codex_config(&sample(), Path::new("/rt/relay-a/.codex/model-catalog.json"));
+        let cfg = generate_codex_config(
+            &sample(),
+            Path::new("/rt/relay-a/.codex/model-catalog.json"),
+        );
         assert!(cfg.contains("model = \"gpt-5.6\""));
         assert!(cfg.contains("model_provider = \"relay-a\""));
         assert!(cfg.contains("[model_providers.relay-a]"));
@@ -319,10 +307,7 @@ mod tests {
             .lines()
             .position(|l| l.starts_with("model_catalog_json = "))
             .unwrap();
-        let first_table = cfg
-            .lines()
-            .position(|l| l.starts_with('['))
-            .unwrap();
+        let first_table = cfg.lines().position(|l| l.starts_with('[')).unwrap();
         assert!(catalog_line < first_table);
         assert!(cfg.contains("model_catalog_json = \"/rt/relay-a/.codex/model-catalog.json\""));
         // The curated-plugin sync is disabled for third-party profiles.
@@ -332,7 +317,10 @@ mod tests {
 
     #[test]
     fn config_never_contains_the_api_key() {
-        let cfg = generate_codex_config(&sample(), Path::new("/rt/relay-a/.codex/model-catalog.json"));
+        let cfg = generate_codex_config(
+            &sample(),
+            Path::new("/rt/relay-a/.codex/model-catalog.json"),
+        );
         assert!(!cfg.contains("sk-super-secret-key-123"));
     }
 
@@ -390,10 +378,8 @@ trust_level = "trusted"
         let doc: toml::Value = cfg.parse().unwrap();
         let projects = doc["projects"].as_table().unwrap();
         // …and the launch workspace is present with a trusted entry.
-        assert!(projects
-            .iter()
-            .any(|(k, v)| k != r"C:\Users\dev\other"
-                && v["trust_level"] == toml::Value::String("trusted".into())));
+        assert!(projects.iter().any(|(k, v)| k != r"C:\Users\dev\other"
+            && v["trust_level"] == toml::Value::String("trusted".into())));
         // The managed top-level keys still come first (TOML table order).
         assert!(cfg.starts_with("model = "));
     }
@@ -506,9 +492,9 @@ trust_level = "trusted"
         let mut p = sample();
         p.model.models = vec![
             "gpt-5.6-sol".into(),
-            "gpt-5.6".into(), // duplicate of the default: dropped
+            "gpt-5.6".into(),   // duplicate of the default: dropped
             "  gpt-6  ".into(), // whitespace: trimmed
-            "   ".into(), // empty: dropped
+            "   ".into(),       // empty: dropped
         ];
         assert_eq!(
             profile_model_ids(&p),

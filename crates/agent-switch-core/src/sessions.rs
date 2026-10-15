@@ -8,7 +8,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+#[cfg(test)]
+use std::time::Duration;
+use std::time::SystemTime;
 
 use crate::engine::Engine;
 use crate::error::{Error, Result};
@@ -61,9 +63,7 @@ pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
     let mut out: Vec<Session> = if entries.len() <= PARALLEL_PARSE_MIN {
         entries
             .into_iter()
-            .filter_map(|(path, engine, profile_id)| {
-                session_from_file(&path, engine, &profile_id)
-            })
+            .filter_map(|(path, engine, profile_id)| session_from_file(&path, engine, &profile_id))
             .collect()
     } else {
         let workers = std::thread::available_parallelism()
@@ -258,292 +258,54 @@ pub fn set_title(store: &ProfileStore, session_id: &str, title: &str) -> Result<
 // Detection: every launch that resumes a session carries the session id in
 // the launched process command line (GUI resume writes a per-session
 // `resume-<id>.ps1/.sh` start script, CLI resume passes the id as an
-// argument). A lock file at `<root>/sessions-open/<id>.json` is written at
-// resume time; the session counts as open while either a process command
-// line still contains the id, or the lock is younger than OPEN_GRACE (the
-// few seconds between the terminal spawn and the CLI actually starting).
+// argument). A lock file at `<root>/sessions-open/<id>.json` protects the
+// short startup interval until actual agent ownership can be verified.
 // ---------------------------------------------------------------------------
 
-/// A lock younger than this counts as open even before the process scan
-/// can see the launched CLI.
-const OPEN_GRACE: Duration = Duration::from_secs(60);
+pub use crate::session_activity::{
+    clear_open_lock, mark_session_open, open_lock_path, open_session_ids, session_activities,
+    session_is_open, SessionActivity, SessionOpenGuard,
+};
 
-/// `<root>/sessions-open/<session-id>.json`
-pub fn open_lock_path(store: &ProfileStore, session_id: &str) -> PathBuf {
-    store.root.join("sessions-open").join(format!("{session_id}.json"))
+/// A background owner must be attached, never resumed into a second writer.
+/// Called again at launch time; the GUI's last poll is only a display hint.
+pub fn resume_arguments(store: &ProfileStore, id: &str, engine: Engine) -> Result<Vec<String>> {
+    resume_arguments_for(session_activities(store).get(id), id, engine)
 }
 
-/// Record that a session was just opened. Fails when the lock already
-/// exists — the atomic create_new is what rejects a concurrent second
-/// resume (the caller must have verified the session is closed first).
-pub fn mark_session_open(store: &ProfileStore, session_id: &str) -> Result<()> {
-    let path = open_lock_path(store, session_id);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
+/// Identify a resume request before taking its exclusive launch guard.
+/// A fork reads the source but does not acquire ownership of that source.
+pub fn resume_session_id(args: &[String]) -> Option<String> {
+    if args.iter().any(|arg| arg == "--fork-session") {
+        return None;
     }
-    let opened_at = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let json = serde_json::json!({ "opened_at": opened_at });
-    use std::io::Write;
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-        .map_err(|e| Error::Other(format!("session already open: {e}")))?;
-    f.write_all(serde_json::to_string(&json).unwrap().as_bytes())?;
-    Ok(())
+    args.iter().enumerate().find_map(|(index, arg)| {
+        let value = arg.strip_prefix("--resume=").or_else(|| {
+            matches!(arg.as_str(), "--resume" | "resume")
+                .then(|| args.get(index + 1).map(String::as_str))
+                .flatten()
+        })?;
+        let name = value.rsplit(['/', '\\']).next()?;
+        let id = name.strip_suffix(".jsonl").unwrap_or(name);
+        (!id.is_empty() && !id.starts_with('-')).then(|| id.to_string())
+    })
 }
 
-/// Remove the open lock (best effort).
-pub fn clear_open_lock(store: &ProfileStore, session_id: &str) {
-    let _ = std::fs::remove_file(open_lock_path(store, session_id));
-}
-
-/// True while a launched process for this session is still running.
-pub fn session_is_open(store: &ProfileStore, session_id: &str) -> bool {
-    open_session_ids(store).contains(session_id)
-}
-
-/// Every session with a lock that is still live; dead locks are pruned.
-pub fn open_session_ids(store: &ProfileStore) -> std::collections::HashSet<String> {
-    let dir = store.root.join("sessions-open");
-    let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        return out;
-    };
-    let mut candidates: Vec<(String, SystemTime)> = Vec::new();
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let Some(stem) = name.to_str() else {
-            continue;
-        };
-        let Some(id) = stem.strip_suffix(".json") else {
-            continue;
-        };
-        let mtime = e
-            .metadata()
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        candidates.push((id.to_string(), mtime));
-    }
-    if candidates.is_empty() {
-        return out;
-    }
-    // One process scan answers for all candidates.
-    let cmdlines = process_command_lines();
-    let now = SystemTime::now();
-    for (id, mtime) in candidates {
-        let live = cmdlines.iter().any(|cl| cl.contains(&id))
-            || now
-                .duration_since(mtime)
-                .map(|age| age < OPEN_GRACE)
-                .unwrap_or(true);
-        if live {
-            out.insert(id.clone());
-        } else {
-            // The CLI is gone: release the lock so the session can reopen.
-            let _ = std::fs::remove_file(open_lock_path(store, &id));
+fn resume_arguments_for(
+    activity: SessionActivity,
+    id: &str,
+    engine: Engine,
+) -> Result<Vec<String>> {
+    match activity {
+        SessionActivity::Background { attach_id } if engine == Engine::Claude => {
+            Ok(vec!["attach".into(), attach_id])
         }
-    }
-    out
-}
-
-/// Command line of every running process (empty when the scan fails —
-/// the mtime grace rule then keeps the state safe, it just lags).
-///
-/// Called exactly once per `open_session_ids` (i.e. once per Sessions-page
-/// poll). It is deliberately NOT cached: a brief stale snapshot would make a
-/// freshly-spawned CLI invisible for its TTL, and the scan itself is a few ms.
-fn process_command_lines() -> Vec<String> {
-    #[cfg(windows)]
-    {
-        proc_cmdlines::snapshot()
-            .into_iter()
-            .map(|(_, cl)| cl)
-            .collect()
-    }
-    #[cfg(not(windows))]
-    {
-        let Ok(out) = std::process::Command::new("ps").args(["-eo", "args="]).output()
-        else {
-            return Vec::new();
-        };
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.to_string())
-            .filter(|l| !l.trim().is_empty())
-            .collect()
-    }
-}
-
-#[cfg(windows)]
-mod proc_cmdlines {
-    //! Every readable (pid, command-line-ish string) pair: a toolhelp
-    //! snapshot for the pids, then a PEB read per process
-    //! (NtQueryInformationProcess → PEB → RTL_USER_PROCESS_PARAMETERS).
-    //! A few ms, no subprocess. x86_64 offsets (the only supported
-    //! Windows target).
-    //!
-    //! The UNICODE_STRING field that holds the full command line moved
-    //! between Windows builds (verified: 0x60 on older builds, 0x70 on
-    //! Windows 11 24H2+), so the neighbouring string fields are all read
-    //! and returned — the caller matches a long, unique session id
-    //! against any of them, which is what matters for the open-detection.
-
-    use std::ffi::c_void;
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-        TH32CS_SNAPPROCESS,
-    };
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_VM_READ,
-    };
-
-    extern "system" {
-        fn NtQueryInformationProcess(
-            process_handle: HANDLE,
-            process_information_class: u32,
-            process_information: *mut c_void,
-            return_length: u32,
-            return_length_out: *mut u32,
-        ) -> i32;
-    }
-
-    #[repr(C)]
-    struct ProcessBasicInfo {
-        reserved1: usize,
-        peb_base_address: *mut c_void,
-        reserved2: [usize; 2],
-        unique_process_id: usize,
-        reserved3: usize,
-    }
-
-    const PROCESS_BASIC_INFORMATION: u32 = 0;
-    const PEB_PROCESS_PARAMETERS: usize = 0x20; // PEB->ProcessParameters
-    /// The UNICODE_STRING fields inspected inside
-    /// RTL_USER_PROCESS_PARAMETERS (x86_64). Across Windows builds the
-    /// full command line lives at 0x60 or 0x70; 0x50 covers the older
-    /// ImagePathName placement. Each entry is a different string on any
-    /// build (image path / command line / dll path), so matching a
-    /// session id against all of them is safe.
-    const PP_STRING_FIELDS: &[usize] = &[0x50, 0x60, 0x70];
-
-    pub(super) fn snapshot() -> Vec<(u32, String)> {
-        let mut out = Vec::new();
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-            if snap.is_null() {
-                return out;
-            }
-            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-            let mut first = true;
-            loop {
-                let ok = if first {
-                    first = false;
-                    Process32FirstW(snap, &mut entry)
-                } else {
-                    Process32NextW(snap, &mut entry)
-                };
-                if ok == 0 {
-                    break;
-                }
-                let pid = entry.th32ProcessID;
-                let h = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid);
-                if !h.is_null() {
-                    out.extend(command_lines_of(h).into_iter().map(|cl| (pid, cl)));
-                    CloseHandle(h);
-                }
-            }
-            CloseHandle(snap);
-        }
-        out
-    }
-
-    /// The readable command-line-ish strings of one process (usually 1-3:
-    /// image path, full command line, and maybe a dll path).
-    unsafe fn command_lines_of(h: HANDLE) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut pbi: ProcessBasicInfo = std::mem::zeroed();
-        if NtQueryInformationProcess(
-            h,
-            PROCESS_BASIC_INFORMATION,
-            &mut pbi as *mut _ as *mut c_void,
-            std::mem::size_of::<ProcessBasicInfo>() as u32,
-            &mut 0u32,
-        ) != 0
-        {
-            return out;
-        }
-        let peb = pbi.peb_base_address as usize;
-        if peb == 0 {
-            return out;
-        }
-        let mut pp_ptr: usize = 0;
-        if read_mem(
-            h,
-            peb + PEB_PROCESS_PARAMETERS,
-            &mut pp_ptr as *mut _ as *mut c_void,
-            std::mem::size_of::<usize>(),
-        ) == 0
-        {
-            return out;
-        }
-        if pp_ptr == 0 {
-            return out;
-        }
-        for off in PP_STRING_FIELDS {
-            if let Some(s) = unicode_string_of(h, pp_ptr + off) {
-                out.push(s);
-            }
-        }
-        out
-    }
-
-    /// Read the UNICODE_STRING at `addr` (u16 Length @+0, u16 MaxLength
-    /// @+2, u32 pad @+4, *u16 Buffer @+8); None when unreadable, empty,
-    /// or not printable ASCII (a misaligned field would decode to noise).
-    unsafe fn unicode_string_of(h: HANDLE, addr: usize) -> Option<String> {
-        let mut length: u16 = 0;
-        let mut buffer: usize = 0;
-        if read_mem(h, addr, &mut length as *mut _ as *mut c_void, std::mem::size_of::<u16>()) == 0
-            || read_mem(
-                h,
-                addr + 8,
-                &mut buffer as *mut _ as *mut c_void,
-                std::mem::size_of::<usize>(),
-            ) == 0
-        {
-            return None;
-        }
-        if length == 0 || buffer == 0 || (length as usize) > 0x4000 {
-            return None;
-        }
-        let mut buf = vec![0u8; length as usize];
-        if read_mem(h, buffer, buf.as_mut_ptr() as *mut c_void, buf.len()) == 0 {
-            return None;
-        }
-        let wide: Vec<u16> =
-            std::slice::from_raw_parts(buf.as_ptr() as *const u16, buf.len() / 2).to_vec();
-        let s = String::from_utf16_lossy(&wide);
-        if s.is_empty() || !s.chars().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
-            return None;
-        }
-        Some(s)
-    }
-
-    /// Read `size` bytes at `addr`; returns bytes read (0 on failure).
-    unsafe fn read_mem(h: HANDLE, addr: usize, out: *mut c_void, size: usize) -> usize {
-        let mut read = 0usize;
-        if ReadProcessMemory(h, addr as *const c_void, out, size, &mut read) == 0 {
-            0
-        } else {
-            read
-        }
+        SessionActivity::Closed => Ok(match engine {
+            Engine::Claude => vec!["--resume".into(), id.into()],
+            Engine::Codex => vec!["resume".into(), id.into()],
+        }),
+        SessionActivity::Unknown => Err(Error::Other("cannot verify session ownership; retry after checking the running CLI / 无法确认会话状态，请检查运行中的 CLI 后重试".into())),
+        _ => Err(Error::Other("session already open or starting / 会话正在运行或启动中".into())),
     }
 }
 
@@ -551,9 +313,11 @@ mod proc_cmdlines {
 /// its meta entries. Only files under `runtime/` whose name matches the
 /// session id are ever removed; returns how many files were deleted.
 pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
-    // A deleted session can never be resumed again, so drop its open lock
-    // even when the transcript files are already gone.
-    clear_open_lock(store, session_id);
+    if session_is_open(store, session_id) {
+        return Err(Error::Other(
+            "cannot delete a running, starting, or unverified session".into(),
+        ));
+    }
     let root = store.runtime_dir();
     let mut removed = 0usize;
     if root.is_dir() {
@@ -588,10 +352,7 @@ pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
                     };
                     if matches {
                         std::fs::remove_file(&path).map_err(|e| {
-                            Error::Other(format!(
-                                "failed to delete {}: {e}",
-                                path.display()
-                            ))
+                            Error::Other(format!("failed to delete {}: {e}", path.display()))
                         })?;
                         removed += 1;
                     }
@@ -600,7 +361,9 @@ pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
         }
     }
     if removed == 0 {
-        return Err(Error::Other(format!("session file not found: {session_id}")));
+        return Err(Error::Other(format!(
+            "session file not found: {session_id}"
+        )));
     }
     // Drop stale meta so the state file does not grow unbounded.
     let mut meta = load_meta(store);
@@ -618,7 +381,7 @@ pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
 /// Returns how many sessions were removed.
 pub fn clear_unpinned_sessions(store: &ProfileStore) -> Result<usize> {
     let meta = load_meta(store);
-    let open = open_session_ids(store);
+    let activity = session_activities(store);
     let keep: std::collections::HashSet<&str> = meta.pinned.iter().map(|s| s.as_str()).collect();
 
     let root = store.runtime_dir();
@@ -645,7 +408,7 @@ pub fn clear_unpinned_sessions(store: &ProfileStore) -> Result<usize> {
                         Engine::Claude => file_stem(&path),
                         Engine::Codex => rollout_session_id(&file_stem(&path)),
                     };
-                    if keep.contains(id.as_str()) || open.contains(&id) {
+                    if keep.contains(id.as_str()) || activity.get(&id).is_open() {
                         continue;
                     }
                     if let Err(e) = std::fs::remove_file(&path) {
@@ -815,9 +578,7 @@ fn parse_codex_session(path: &Path) -> Option<Session> {
                 }
                 Some("response_item") if preview.is_empty() => {
                     if let Some(p) = v.get("payload") {
-                        let is_user_message = p
-                            .get("type")
-                            .and_then(|x| x.as_str())
+                        let is_user_message = p.get("type").and_then(|x| x.as_str())
                             == Some("message")
                             && p.get("role").and_then(|x| x.as_str()) == Some("user");
                         if is_user_message {
@@ -906,10 +667,70 @@ mod tests {
     }
 
     #[test]
+    fn background_resume_attaches_without_forking_or_starting_a_second_writer() {
+        assert_eq!(
+            resume_arguments_for(
+                SessionActivity::Background {
+                    attach_id: "job-id".into()
+                },
+                "full-session-id",
+                Engine::Claude
+            )
+            .unwrap(),
+            ["attach", "job-id"]
+        );
+        assert_eq!(
+            resume_arguments_for(SessionActivity::Closed, "session", Engine::Claude).unwrap(),
+            ["--resume", "session"]
+        );
+        assert_eq!(
+            resume_arguments_for(SessionActivity::Closed, "session", Engine::Codex).unwrap(),
+            ["resume", "session"]
+        );
+        for activity in [
+            SessionActivity::Running,
+            SessionActivity::Starting,
+            SessionActivity::Unknown,
+        ] {
+            assert!(resume_arguments_for(activity, "session", Engine::Claude).is_err());
+        }
+    }
+
+    #[test]
+    fn resume_requests_lock_the_destination_and_never_the_fork_source() {
+        let parse = |args: &[&str]| {
+            resume_session_id(&args.iter().map(|arg| arg.to_string()).collect::<Vec<_>>())
+        };
+        assert_eq!(parse(&["--resume=session"]), Some("session".into()));
+        assert_eq!(parse(&["resume", "session"]), Some("session".into()));
+        assert_eq!(
+            parse(&["--resume", r"D:\会话 记录\session.jsonl"]),
+            Some("session".into())
+        );
+        assert_eq!(parse(&["--resume", "source", "--fork-session"]), None);
+        assert_eq!(parse(&["--resume", "--verbose"]), None);
+        assert_eq!(parse(&["attach", "job"]), None);
+    }
+
+    #[test]
+    fn running_session_cannot_be_deleted_or_unlocked() {
+        let root = temp_root();
+        let store = ProfileStore { root: root.clone() };
+        mark_session_open(&store, "running").unwrap();
+        assert!(delete_session(&store, "running").is_err());
+        assert!(open_lock_path(&store, "running").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn claude_session_parsed() {
         let root = temp_root();
         let store = ProfileStore { root: root.clone() };
-        let dir = store.runtime_dir().join("myprofile").join(".claude").join("projects");
+        let dir = store
+            .runtime_dir()
+            .join("myprofile")
+            .join(".claude")
+            .join("projects");
         let proj = dir.join("C--Users-demo");
         std::fs::create_dir_all(&proj).unwrap();
         let file = proj.join("11111111-2222-3333-4444-555555555555.jsonl");
@@ -948,7 +769,8 @@ mod tests {
             .join("09")
             .join("10");
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("rollout-2026-09-10T10-00-00-99999999-8888-7777-6666-555555555555.jsonl");
+        let file =
+            dir.join("rollout-2026-09-10T10-00-00-99999999-8888-7777-6666-555555555555.jsonl");
         std::fs::write(
             &file,
             r#"{"type":"session_meta","payload":{"id":"99999999-8888-7777-6666-555555555555","cwd":"/home/dev/proj"}}
@@ -964,7 +786,10 @@ mod tests {
         assert!(matches!(s.engine, Engine::Codex));
         assert_eq!(s.cwd.as_deref(), Some("/home/dev/proj"));
         assert_eq!(s.preview, "fix the build");
-        assert_eq!(s.resume_args(), vec!["resume", "99999999-8888-7777-6666-555555555555"]);
+        assert_eq!(
+            s.resume_args(),
+            vec!["resume", "99999999-8888-7777-6666-555555555555"]
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -972,7 +797,11 @@ mod tests {
     fn unknown_shapes_still_listed() {
         let root = temp_root();
         let store = ProfileStore { root: root.clone() };
-        let dir = store.runtime_dir().join("p1").join(".claude").join("projects");
+        let dir = store
+            .runtime_dir()
+            .join("p1")
+            .join(".claude")
+            .join("projects");
         let proj = dir.join("X");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(proj.join("abc123.jsonl"), "not json at all\n").unwrap();
@@ -986,7 +815,11 @@ mod tests {
 
     /// Create one claude transcript in a temp store; returns its id.
     fn seed_claude_session(store: &ProfileStore, profile: &str, id: &str) {
-        let dir = store.runtime_dir().join(profile).join(".claude").join("projects");
+        let dir = store
+            .runtime_dir()
+            .join(profile)
+            .join(".claude")
+            .join("projects");
         let proj = dir.join("C--Users-demo");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(
@@ -1070,8 +903,11 @@ mod tests {
         )
         .unwrap();
         // An unrelated rollout must survive.
-        std::fs::write(dir.join("rollout-2026-09-10T11-00-00-88888888-aaaa-bbbb-cccc-000000000000.jsonl"), "{}")
-            .unwrap();
+        std::fs::write(
+            dir.join("rollout-2026-09-10T11-00-00-88888888-aaaa-bbbb-cccc-000000000000.jsonl"),
+            "{}",
+        )
+        .unwrap();
 
         let removed = delete_session(&store, "77777777-aaaa-bbbb-cccc-000000000000").unwrap();
         assert_eq!(removed, 1);
@@ -1131,7 +967,11 @@ mod tests {
     fn find_session_across_homes() {
         let root = temp_root();
         let store = ProfileStore { root: root.clone() };
-        let dir = store.runtime_dir().join("p2").join(".claude").join("projects");
+        let dir = store
+            .runtime_dir()
+            .join("p2")
+            .join(".claude")
+            .join("projects");
         let proj = dir.join("Y");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::write(
@@ -1160,61 +1000,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Live Windows test: a process whose command line carries a session
-    /// id makes that session "open" even when the lock is older than the
-    /// grace window (the backdated lock proves the process scan — not the
-    /// mtime rule — kept it open); a backdated lock with no matching
-    /// process is pruned.
+    /// Terminal hosts can retain an id after the CLI/tab has exited.
     #[cfg(windows)]
     #[test]
-    fn open_scan_sees_live_process_and_prunes_dead() {
+    fn open_scan_ignores_terminal_hosts() {
         let root = temp_root();
         let store = ProfileStore { root: root.clone() };
-        let live_id = format!("as-live-{}", uuid::Uuid::new_v4());
-        let scan_id = format!("as-scan-{}", uuid::Uuid::new_v4());
-        let dead_id = format!("as-dead-{}", uuid::Uuid::new_v4());
-
-        // A long-lived cmd.exe whose command line carries both markers.
+        let id = format!("host-{}", uuid::Uuid::new_v4());
         let mut child = std::process::Command::new("cmd.exe")
-            .arg("/C")
-            .arg(format!("ping -n 60 127.0.0.1 >nul & rem {live_id} {scan_id}"))
+            .args(["/D", "/C"])
+            .arg(format!("ping -n 4 127.0.0.1 >nul & rem --resume {id}"))
             .spawn()
-            .expect("spawn cmd.exe");
-
-        let dir = store.root.join("sessions-open");
-        std::fs::create_dir_all(&dir).unwrap();
-        // Fresh lock: open either way (cmdline OR grace window).
-        std::fs::write(dir.join(format!("{live_id}.json")), "{}").unwrap();
-        // Backdated locks: only the cmdline rule can keep them open.
-        for id in [&scan_id, &dead_id] {
-            let p = dir.join(format!("{id}.json"));
-            std::fs::write(&p, "{}").unwrap();
-            let f = std::fs::File::options().write(true).open(&p).unwrap();
-            f.set_modified(SystemTime::now() - Duration::from_secs(120))
-                .unwrap();
-        }
-
-        // The snapshot can lag the spawn: retry a few times.
-        let mut open = open_session_ids(&store);
-        for _ in 0..5 {
-            if open.contains(&scan_id) {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(500));
-            open = open_session_ids(&store);
-        }
-        assert!(open.contains(&live_id), "live lock lost: {open:?}");
-        assert!(
-            open.contains(&scan_id),
-            "backdated lock only stays open via the process scan: {open:?}"
-        );
-        assert!(!open.contains(&dead_id), "dead lock not pruned: {open:?}");
-        assert!(!dir.join(format!("{dead_id}.json")).exists());
-
+            .unwrap();
+        mark_session_open(&store, &id).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(open_lock_path(&store, &id))
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(120))
+            .unwrap();
+        assert!(!session_is_open(&store, &id));
+        assert!(!open_lock_path(&store, &id).exists());
         let _ = child.kill();
         let _ = child.wait();
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(root);
     }
-
-
 }

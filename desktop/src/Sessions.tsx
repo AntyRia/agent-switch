@@ -100,7 +100,7 @@ export default function SessionsPage({ status }: SessionsPageProps) {
   async function resume(s: Session) {
     // A session that is still running in a terminal must be closed first —
     // the backend enforces this too (belt and suspenders).
-    if (s.open) {
+    if (s.open && s.activity !== "background") {
       setResult({
         sessionId: s.session_id,
         ok: false,
@@ -121,8 +121,13 @@ export default function SessionsPage({ status }: SessionsPageProps) {
     setBusy(s.session_id);
     setResult(null);
     try {
-      await api.resumeSession(s.session_id);
-      setResult({ sessionId: s.session_id, ok: true, text: t("sessionResumed") });
+      const launch = await api.resumeSession(s.session_id);
+      setResult({
+        sessionId: s.session_id,
+        ok: !launch.warning,
+        text: launch.warning ?? t(s.activity === "background" ? "sessionAttached" : "sessionResumed"),
+      });
+      await load();
     } catch (e) {
       setResult({
         sessionId: s.session_id,
@@ -375,7 +380,7 @@ export default function SessionsPage({ status }: SessionsPageProps) {
                   type="button"
                   className="icon-btn danger"
                   title={t("sessionDelete")}
-                  disabled={busy === s.session_id}
+                  disabled={busy === s.session_id || s.open}
                   onClick={() => void remove(s)}
                 >
                   🗑
@@ -386,7 +391,7 @@ export default function SessionsPage({ status }: SessionsPageProps) {
                   type="button"
                   className="btn primary small"
                   disabled={
-                    busy === s.session_id || s.open || cliMissing(s.engine)
+                    busy === s.session_id || (s.open && s.activity !== "background") || cliMissing(s.engine)
                   }
                   title={
                     cliMissing(s.engine)
@@ -397,11 +402,17 @@ export default function SessionsPage({ status }: SessionsPageProps) {
                   }
                   onClick={() => void resume(s)}
                 >
-                  {s.open
-                    ? t("sessionOpen")
-                    : busy === s.session_id
-                      ? t("resuming")
-                      : t("sessionResume")}
+                  {busy === s.session_id
+                    ? t("resuming")
+                    : s.activity === "background"
+                      ? t("sessionAttach")
+                      : s.activity === "starting"
+                        ? t("sessionStarting")
+                        : s.activity === "unknown"
+                          ? t("sessionUnknown")
+                          : s.open
+                            ? t("sessionOpen")
+                            : t("sessionResume")}
                 </button>
               ) : (
                 <span className="muted">{t("sessionNoProfile")}</span>

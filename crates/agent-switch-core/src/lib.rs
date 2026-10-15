@@ -3,6 +3,7 @@
 //! on this crate so they always share the same profile files and behavior.
 
 pub mod claude;
+pub mod cli_health;
 pub mod codex;
 pub mod engine;
 pub mod error;
@@ -14,6 +15,8 @@ pub mod profile;
 pub mod profile_store;
 pub mod resolve;
 pub mod runtime;
+mod session_activity;
+mod session_process;
 pub mod sessions;
 pub mod settings;
 pub mod terminal;

@@ -14,24 +14,14 @@ use crate::terminal;
 /// 1. the environment variable named by `api_key_env` (when set, non-empty)
 /// 2. the `api_key` stored in the profile
 pub fn resolve_api_key(p: &Profile) -> Result<String> {
-    if let Some(env_name) = p
-        .provider
-        .api_key_env
-        .as_deref()
-        .filter(|n| !n.is_empty())
-    {
+    if let Some(env_name) = p.provider.api_key_env.as_deref().filter(|n| !n.is_empty()) {
         if let Ok(value) = std::env::var(env_name) {
             if !value.is_empty() {
                 return Ok(value);
             }
         }
     }
-    if let Some(key) = p
-        .provider
-        .api_key
-        .as_deref()
-        .filter(|k| !k.is_empty())
-    {
+    if let Some(key) = p.provider.api_key.as_deref().filter(|k| !k.is_empty()) {
         return Ok(key.to_string());
     }
     // No key configured (e.g. a local vLLM server): launch with an empty
@@ -110,6 +100,11 @@ pub fn proxy_env_pairs(settings: &Settings) -> Vec<(String, String)> {
 /// launcher appends it (dangerous mode) AND the user's own shell
 /// alias/function already carries it.
 fn launch_args(settings: &Settings, engine: Engine, extra_args: &[String]) -> Vec<String> {
+    // attach is a terminal client for an existing backend. Its subcommand
+    // parser does not take new-session permission/model flags.
+    if engine == Engine::Claude && extra_args.first().is_some_and(|a| a == "attach") {
+        return extra_args.to_vec();
+    }
     let mut args = Vec::new();
     if let Some(flag) = settings.dangerous_flag(engine) {
         if !extra_args.iter().any(|a| a == flag) {
@@ -164,6 +159,7 @@ pub fn launch_in_runtime(
     extra_args: &[String],
 ) -> Result<i32> {
     let engine = runtime.engine;
+    crate::cli_health::ensure_ready(engine)?;
     if matches!(engine, Engine::Claude) {
         // Mark the workspace trusted in the isolated home (idempotent
         // merge; see seed_claude_home). Best effort — never blocks launch.
@@ -265,7 +261,10 @@ pub struct TerminalLaunch {
 fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, String)> {
     match runtime.engine {
         Engine::Codex => vec![
-            (Engine::Codex.home_env(), runtime.home.to_string_lossy().into_owned()),
+            (
+                Engine::Codex.home_env(),
+                runtime.home.to_string_lossy().into_owned(),
+            ),
             // A Codex panic exits 101 with the backtrace on stderr; without
             // this the backtrace is one frame deep and hard to act on. The
             // terminal window stays open (-NoExit), so it is readable.
@@ -279,17 +278,11 @@ fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, St
             // Official profiles keep the CLI's built-in official endpoint:
             // no ANTHROPIC_BASE_URL override.
             if !profile.is_official() {
-                v.push((
-                    "ANTHROPIC_BASE_URL",
-                    profile.provider.base_url.clone(),
-                ));
+                v.push(("ANTHROPIC_BASE_URL", profile.provider.base_url.clone()));
             }
             v.extend([
                 ("ANTHROPIC_MODEL", profile.model.default.clone()),
-                (
-                    "ANTHROPIC_SMALL_FAST_MODEL",
-                    profile.model.default.clone(),
-                ),
+                ("ANTHROPIC_SMALL_FAST_MODEL", profile.model.default.clone()),
                 // Forces transcript persistence even if the terminal the
                 // user launches from still carries nested-session markers.
                 ("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE", "1".to_string()),
@@ -311,10 +304,23 @@ fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, St
 ///
 /// `script_stem` names the generated script (`<stem>.ps1` / `<stem>.sh` in
 /// the runtime dir). Fresh launches use `start`; session resumes use
-/// `resume-<session-id>` — putting the session id in the script file name
-/// keeps it visible in the launched process tree, which is what the
-/// "already open" detection greps for (sessions::open_session_ids).
+/// `resume-<session-id>`. Ownership is detected from the agent process and
+/// its live registry; script names are only for identifying launch artifacts.
 pub fn prepare_terminal_launch(
+    store: &ProfileStore,
+    profile: &Profile,
+    settings: &Settings,
+    workspace: &Path,
+    extra_args: &[String],
+    script_stem: &str,
+) -> Result<TerminalLaunch> {
+    crate::cli_health::ensure_ready(profile.engine())?;
+    prepare_terminal_launch_impl(store, profile, settings, workspace, extra_args, script_stem)
+}
+
+// Script generation is tested without installed CLIs or real user config;
+// the public entrypoint always performs the bounded executable health check.
+fn prepare_terminal_launch_impl(
     store: &ProfileStore,
     profile: &Profile,
     settings: &Settings,
@@ -372,6 +378,54 @@ pub fn prepare_terminal_launch(
         runtime,
         env: launch_env,
     })
+}
+
+/// Prepare and open a session terminal in one core operation. The startup
+/// guard rolls back every preparation/spawn error; after spawn the script
+/// releases its own lock when the CLI exits, including immediate failures.
+pub fn resume_in_terminal(
+    store: &ProfileStore,
+    session: &crate::sessions::Session,
+    settings: &Settings,
+) -> Result<(TerminalLaunch, terminal::TerminalOutcome)> {
+    use crate::sessions::{resume_arguments, SessionOpenGuard};
+    let args = resume_arguments(store, &session.session_id, session.engine)?;
+    let attaching = args.first().is_some_and(|arg| arg == "attach");
+    let guard = if attaching {
+        None
+    } else {
+        Some(SessionOpenGuard::acquire(store, &session.session_id)?)
+    };
+    let workspace = match session.cwd.as_deref().map(Path::new).filter(|p| p.is_dir()) {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let stem = format!(
+        "{}-{}",
+        if attaching { "attach" } else { "resume" },
+        session.session_id
+    );
+    let launch = prepare_terminal_launch(
+        store,
+        &store.get(&session.profile_id)?,
+        settings,
+        &workspace,
+        &args,
+        &stem,
+    )?;
+    if let Some(guard) = &guard {
+        guard.wrap_script(&launch.script_path)?;
+    }
+    let outcome = open_in_system_terminal(
+        &launch.script_path,
+        &workspace,
+        &launch.env,
+        &settings.terminal,
+    )?;
+    if let Some(guard) = guard {
+        guard.retain();
+    }
+    Ok((launch, outcome))
 }
 
 /// Write the platform start script (`<stem>.ps1` / `<stem>.sh`) into
@@ -466,12 +520,9 @@ pub fn login_args(engine: Engine) -> Vec<String> {
 /// must hit the official endpoint with a clean environment), stdio
 /// inherited so the interactive browser flow stays visible. Waits for the
 /// CLI and returns its exit code.
-pub fn login_in_runtime(
-    runtime: &Runtime,
-    profile: &Profile,
-    workspace: &Path,
-) -> Result<i32> {
+pub fn login_in_runtime(runtime: &Runtime, profile: &Profile, workspace: &Path) -> Result<i32> {
     let engine = runtime.engine;
+    crate::cli_health::ensure_ready(engine)?;
     if matches!(engine, Engine::Claude) {
         // Best effort: pre-seed so only the login screen appears.
         let _ = crate::runtime::seed_claude_home(&runtime.home, None);
@@ -491,7 +542,8 @@ pub fn login_in_runtime(
     }
     cmd.env_clear();
     cmd.envs(sanitized_child_env());
-    cmd.current_dir(workspace).env(engine.home_env(), &runtime.home);
+    cmd.current_dir(workspace)
+        .env(engine.home_env(), &runtime.home);
     for arg in login_args(engine) {
         cmd.arg(arg);
     }
@@ -620,6 +672,16 @@ mod tests {
     }
 
     #[test]
+    fn background_attach_has_no_new_session_flags() {
+        let settings = Settings {
+            dangerous_mode: true,
+            ..Settings::default()
+        };
+        let args = vec!["attach".into(), "background-id".into()];
+        assert_eq!(launch_args(&settings, Engine::Claude, &args), args);
+    }
+
+    #[test]
     fn stored_key_used_when_no_env() {
         let p = profile("codex", Some("stored-key".into()), None, None);
         assert_eq!(resolve_api_key(&p).unwrap(), "stored-key");
@@ -645,7 +707,12 @@ mod tests {
         let p = profile("codex", None, None, None);
         assert_eq!(resolve_api_key(&p).unwrap(), "");
         // Same when the named env var is unset.
-        let p = profile("codex", None, Some("AS_TEST_KEY_DOES_NOT_EXIST_X9".into()), None);
+        let p = profile(
+            "codex",
+            None,
+            Some("AS_TEST_KEY_DOES_NOT_EXIST_X9".into()),
+            None,
+        );
         assert_eq!(resolve_api_key(&p).unwrap(), "");
     }
 
@@ -661,7 +728,8 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         let p = profile("codex", Some("sk-script-secret".into()), None, None);
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(!content.contains("sk-script-secret"));
         // The key is still available in-process for terminal injection.
@@ -687,7 +755,8 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         let p = profile("codex", Some("sk-bom".into()), None, None);
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         let bytes = std::fs::read(&launch.script_path).unwrap();
         assert!(
             bytes.starts_with(b"\xef\xbb\xbf"),
@@ -711,7 +780,8 @@ mod tests {
             Some("auth_token".into()),
         );
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         // Non-secret runtime env is written to the script (both ps1 and sh
         // spell the variable names the same way).
@@ -743,7 +813,7 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         // claude → `claude --resume <id>`
         let p = profile("claude", Some("sk-resume-secret".into()), None, None);
-        let launch = prepare_terminal_launch(
+        let launch = prepare_terminal_launch_impl(
             &store,
             &p,
             &Settings::default(),
@@ -761,7 +831,7 @@ mod tests {
         assert!(!content.contains("sk-resume-secret"));
         // codex → `codex resume <id>`
         let pc = profile("codex", None, None, None);
-        let launch = prepare_terminal_launch(
+        let launch = prepare_terminal_launch_impl(
             &store,
             &pc,
             &Settings::default(),
@@ -834,7 +904,8 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         let p = profile("claude", Some("sk-force".into()), None, None);
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(content.contains("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"));
         assert!(content.contains("= '1'") || content.contains("='1'") || content.contains("=1"));
@@ -856,7 +927,8 @@ mod tests {
             Some("api_key".into()),
         );
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         assert_eq!(
             launch.env,
             vec![("ANTHROPIC_API_KEY".to_string(), "sk-claude-2".to_string())]
@@ -897,24 +969,22 @@ mod tests {
         s.proxy_host = "127.0.0.1".into();
         s.proxy_port = 7897;
         let p = profile("codex", Some("sk-settings-secret".into()), None, None);
-        let launch =
-            prepare_terminal_launch(&store, &p, &s, &dir, &[], "start").unwrap();
+        let launch = prepare_terminal_launch_impl(&store, &p, &s, &dir, &[], "start").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         // The bypass flag is baked into the generated script...
         assert!(content.contains("--dangerously-bypass-approvals-and-sandbox"));
         // ...while the proxy pairs travel in the in-process env vec,
         // never into the script file.
-        let has = |kv: &[(String, String)], k: &str| {
-            kv.iter().any(|(kk, _)| kk == k)
-        };
+        let has = |kv: &[(String, String)], k: &str| kv.iter().any(|(kk, _)| kk == k);
         assert!(has(&launch.env, "OPENAI_API_KEY"));
         assert!(has(&launch.env, "HTTP_PROXY"));
         assert!(has(&launch.env, "NO_PROXY"));
         assert!(!content.contains("sk-settings-secret"));
         assert!(!content.contains("HTTP_PROXY"));
         // Default settings: no flag, no proxy.
-        let launch = prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start2")
-            .unwrap();
+        let launch =
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start2")
+                .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(!content.contains("--dangerously"));
         assert_eq!(launch.env.len(), 1);
@@ -941,7 +1011,7 @@ mod tests {
         let flag = "--dangerously-bypass-approvals-and-sandbox".to_string();
         let p = profile("codex", Some("sk-dup".into()), None, None);
         let launch =
-            prepare_terminal_launch(&store, &p, &s, &dir, &[flag.clone()], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &s, &dir, &[flag.clone()], "start").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert_eq!(
             content.matches(&flag).count(),
@@ -949,15 +1019,14 @@ mod tests {
             "flag duplicated in script:\n{content}"
         );
         // No caller args → the launcher adds it, still exactly once.
-        let launch =
-            prepare_terminal_launch(&store, &p, &s, &dir, &[], "start2").unwrap();
+        let launch = prepare_terminal_launch_impl(&store, &p, &s, &dir, &[], "start2").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert_eq!(content.matches(&flag).count(), 1);
         // claude flag, same rule.
         let p = profile("claude", Some("sk-dup2".into()), None, None);
         let cflag = "--dangerously-skip-permissions".to_string();
         let launch =
-            prepare_terminal_launch(&store, &p, &s, &dir, &[cflag.clone()], "start3").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &s, &dir, &[cflag.clone()], "start3").unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert_eq!(content.matches(&cflag).count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -979,7 +1048,8 @@ mod tests {
         let mut p = profile("claude", None, None, None);
         p.provider.provider_type = "official".into();
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(content.contains("CLAUDE_CONFIG_DIR"));
         assert!(!content.contains("ANTHROPIC_BASE_URL"));
@@ -1006,7 +1076,8 @@ mod tests {
         );
         p.provider.provider_type = "official".into();
         let launch =
-            prepare_terminal_launch(&store, &p, &Settings::default(), &dir, &[], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+                .unwrap();
         assert_eq!(
             launch.env,
             vec![("ANTHROPIC_API_KEY".to_string(), "sk-official".to_string())]
@@ -1017,7 +1088,8 @@ mod tests {
         let mut pc = profile("codex", Some("sk-official".into()), None, None);
         pc.provider.provider_type = "official".into();
         let launch =
-            prepare_terminal_launch(&store, &pc, &Settings::default(), &dir, &[], "start2").unwrap();
+            prepare_terminal_launch_impl(&store, &pc, &Settings::default(), &dir, &[], "start2")
+                .unwrap();
         assert_eq!(
             launch.env,
             vec![("OPENAI_API_KEY".to_string(), "sk-official".to_string())]
