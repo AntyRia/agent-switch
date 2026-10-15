@@ -116,7 +116,14 @@ impl SessionOpenGuard {
             let lock = lock.replace('\'', "'\\''");
             let body = script
                 .trim_start_matches("#!/bin/sh\n")
-                .replace("\nexec '", "\n'");
+                .lines()
+                .map(|line| {
+                    line.strip_prefix("exec '")
+                        .map(|tail| format!("'{tail}"))
+                        .unwrap_or_else(|| line.to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             format!("#!/bin/sh\nAS_SESSION_LOCK='{lock}'\ntrap 'if grep -q \"{}\" \"$AS_SESSION_LOCK\" 2>/dev/null; then rm -f -- \"$AS_SESSION_LOCK\"; fi' EXIT\n{body}", self.token)
         };
         std::fs::write(path, wrapped)?;
