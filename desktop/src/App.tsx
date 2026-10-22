@@ -18,6 +18,7 @@ import AboutPage from "./About";
 import Editor from "./Editor";
 import LaunchModal from "./Launch";
 import SessionsPage from "./Sessions";
+import UsagePage from "./Usage";
 import SettingsPage from "./Settings";
 import UpdateModal from "./UpdateModal";
 import { I18nProvider, useI18n, type TKey } from "./i18n";
@@ -26,6 +27,7 @@ type View =
   | { name: "list" }
   | { name: "editor"; id: string | null } // null = new profile
   | { name: "sessions" }
+  | { name: "usage" }
   | { name: "settings" }
   | { name: "about" };
 
@@ -219,6 +221,7 @@ function AppInner() {
             type="button"
             className={
               view.name === "sessions" ||
+              view.name === "usage" ||
               view.name === "settings" ||
               view.name === "about"
                 ? ""
@@ -234,6 +237,13 @@ function AppInner() {
             onClick={() => setView({ name: "sessions" })}
           >
             {t("navSessions")}
+          </button>
+          <button
+            type="button"
+            className={view.name === "usage" ? "active" : ""}
+            onClick={() => setView({ name: "usage" })}
+          >
+            {lang === "zh" ? "用量" : "Usage"}
           </button>
           <button
             type="button"
@@ -288,6 +298,8 @@ function AppInner() {
         )}
 
         {view.name === "sessions" && <SessionsPage status={status} />}
+
+        {view.name === "usage" && <UsagePage profiles={profiles} />}
 
         {view.name === "settings" && <SettingsPage />}
 

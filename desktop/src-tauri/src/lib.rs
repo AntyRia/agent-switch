@@ -20,6 +20,8 @@ pub fn run() {
             commands::launch_profile,
             commands::login_profile,
             commands::list_sessions,
+            commands::list_session_usage,
+            commands::get_server_cache,
             commands::resume_session,
             commands::set_session_pinned,
             commands::set_session_title,

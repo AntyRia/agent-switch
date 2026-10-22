@@ -130,7 +130,7 @@ pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
 /// reading any transcript content. `list_sessions` maps these through
 /// `session_from_file`; `find_session` uses them to narrow to the one file
 /// whose name matches before paying for a full parse.
-fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, String)>> {
+pub(crate) fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, String)>> {
     let mut out = Vec::new();
     let root = store.runtime_dir();
     if !root.is_dir() {

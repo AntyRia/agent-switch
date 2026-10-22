@@ -644,6 +644,42 @@ pub async fn list_sessions() -> Result<Vec<SessionView>, String> {
         .collect())
 }
 
+/// Token usage per session (Claude transcript + Codex rollout parsers).
+/// The scan reads multi-megabyte transcripts, so run it off the async
+/// runtime; the core module caches by (path, mtime, size).
+#[tauri::command]
+pub async fn list_session_usage() -> Result<Vec<agent_switch_core::usage::SessionUsage>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let store = ProfileStore::new();
+        agent_switch_core::usage::list_usage(&store)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Live vLLM prefix-cache counters for one profile's /metrics endpoint.
+#[tauri::command]
+pub async fn get_server_cache(
+    profile_id: String,
+) -> Result<agent_switch_core::usage::ServerCacheStats, String> {
+    let profile = ProfileStore::new()
+        .get(&profile_id)
+        .map_err(|e| e.to_string())?;
+    let key = profile.provider.api_key.clone().or_else(|| {
+        profile
+            .provider
+            .api_key_env
+            .as_ref()
+            .and_then(|name| std::env::var(name).ok())
+    });
+    let base_url = profile.provider.base_url.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        agent_switch_core::usage::fetch_server_cache(&base_url, key.as_deref())
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Pin or unpin a pool session (persisted in sessions-meta.json).
 #[tauri::command]
 pub async fn set_session_pinned(session_id: String, pinned: bool) -> Result<(), String> {

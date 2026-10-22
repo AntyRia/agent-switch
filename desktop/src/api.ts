@@ -105,6 +105,49 @@ export interface Session {
   activity: "closed" | "starting" | "running" | "background" | "unknown";
 }
 
+/** One assistant message (Claude) / token_count event (Codex). */
+export interface TurnUsage {
+  /** Unix seconds; 0 when the record carried no timestamp. */
+  timestamp: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  model: string;
+}
+
+/** Per-session token usage, deduplicated by message id in the backend. */
+export interface SessionUsage {
+  session_id: string;
+  profile_id: string;
+  engine: string;
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_creation_tokens: number;
+  /** input + cache_creation + cache_read (Claude), or input (Codex). */
+  total_prompt_tokens: number;
+  /** cache_read / total_prompt_tokens, 0..1. */
+  cache_hit_rate: number;
+  turns: number;
+  modified: number;
+  /** Newest turns (max 200), oldest first. */
+  per_turn: TurnUsage[];
+}
+
+/** Live vLLM /metrics counters (server-side prefix cache). */
+export interface ServerCacheStats {
+  ok: boolean;
+  message: string;
+  endpoint: string;
+  hits: number;
+  queries: number;
+  hit_rate: number;
+  kv_usage: number;
+  running: number;
+}
+
 export interface Status {
   codex_found: boolean;
   codex_version: string | null;
@@ -208,6 +251,9 @@ export const api = {
   loginProfile: (id: string): Promise<LaunchResult> =>
     invoke("login_profile", { id }),
   listSessions: (): Promise<Session[]> => invoke("list_sessions"),
+  listSessionUsage: (): Promise<SessionUsage[]> => invoke("list_session_usage"),
+  getServerCache: (profile_id: string): Promise<ServerCacheStats> =>
+    invoke("get_server_cache", { profileId: profile_id }),
   resumeSession: (session_id: string): Promise<LaunchResult> =>
     invoke("resume_session", { sessionId: session_id }),
   setSessionPinned: (session_id: string, pinned: boolean): Promise<void> =>

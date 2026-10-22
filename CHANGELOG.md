@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-22
+
+### Added
+
+- **Usage Insights (用量洞察)** — a new top-level view next to Sessions.
+  Per-session token accounting parsed from the isolated Claude/Codex
+  transcripts, de-duplicated by message id so streaming chunks no longer
+  inflate input/output counts.
+- Prompt / cache-read / cache-write / output totals, a 14-day aggregate
+  chart, per-turn SVG bars in the session drawer, filters by profile, CLI
+  and time range, plus search.
+- **Server cache card** — reads vLLM `/metrics` (`prefix_cache_hits_total`,
+  `prefix_cache_queries_total`, KV usage, running requests) for the selected
+  local profile and refreshes every 12 s. This is the authoritative cache
+  hit rate when the Anthropic-compatible gateway does not return
+  `cache_read_input_tokens` (the CLI-side number stays at 0%).
+- Explain banner when the gateway omits cache fields, connecting the client
+  0% to the server-side number.
+
+### Changed
+
+- New Tauri commands `list_session_usage` and `get_server_cache`. Transcript
+  scans are cached by (path, mtime, size), so multi-megabyte JSONL files are
+  not re-read on every poll.
+- Version bumped to 0.3.0 across desktop, core and CLI.
+
+### Notes
+
+- Client cache numbers are only meaningful for gateways that return
+  Anthropic cache usage; vLLM's Anthropic frontend currently does not.
+
 ## [0.2.6] - 2026-10-15
 
 ### Fixed
