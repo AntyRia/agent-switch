@@ -48,6 +48,8 @@ const ZH = {
   searchPlaceholder: "搜索会话、模型、配置…",
   allProfiles: "全部配置",
   scopeLabel: "配置范围",
+  scopeEmptyTitle: "该配置当前没有可显示的数据",
+  scopeEmptyBody: "服务可能未启动，或还没有产生请求；可以切回全部配置。",
   allEngines: "全部 CLI",
   statPrompt: "总处理 Tokens",
   statPromptSub: "输入 + 缓存读取 + 缓存写入",
@@ -128,6 +130,8 @@ const EN: Copy = {
   searchPlaceholder: "Search session, model, profile…",
   allProfiles: "All profiles",
   scopeLabel: "Scope",
+  scopeEmptyTitle: "No data for this profile",
+  scopeEmptyBody: "The service may be down or no requests exist yet. Switch back to all profiles.",
   allEngines: "All CLIs",
   statPrompt: "Prompt tokens",
   statPromptSub: "input + cache read + cache write",
@@ -895,6 +899,21 @@ export default function UsagePage({ profiles }: Props) {
     return out;
   }, [sessions, usage]);
 
+  const dataProfileIds = useMemo(
+    () => new Set(rows.map((r) => r.usage.profile_id)),
+    [rows],
+  );
+  const scopeOptions = useMemo(
+    () => profiles.filter((p) => dataProfileIds.has(p.id)),
+    [profiles, dataProfileIds],
+  );
+
+  useEffect(() => {
+    if (scopeProfileId !== "all" && !scopeOptions.some((p) => p.id === scopeProfileId)) {
+      setScopeProfileId("all");
+    }
+  }, [scopeOptions, scopeProfileId]);
+
   const filtered = useMemo(() => {
     const now = Math.floor(Date.now() / 1000);
     const q = search.trim().toLowerCase();
@@ -1069,13 +1088,22 @@ export default function UsagePage({ profiles }: Props) {
               onChange={(e) => setScopeProfileId(e.target.value)}
             >
               <option value="all">{copy.allProfiles}</option>
-              {profiles.map((p) => (
+              {scopeOptions.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
               ))}
             </select>
           </label>
+          {scopeProfileId !== "all" && (
+            <button
+              type="button"
+              className="btn secondary small"
+              onClick={() => setScopeProfileId("all")}
+            >
+              {copy.allProfiles}
+            </button>
+          )}
           <div className="usage-range" role="group">
             {(["all", "7d", "30d"] as const).map((r) => (
               <button
@@ -1195,7 +1223,7 @@ export default function UsagePage({ profiles }: Props) {
         </section>
 
         <ServerPanel
-          profiles={profiles}
+          profiles={scopeOptions}
           scopeId={scopeProfileId}
           statsById={serverByProfile}
           onScope={setScopeProfileId}
@@ -1242,8 +1270,19 @@ export default function UsagePage({ profiles }: Props) {
             <div className="usage-empty-icon">
               <Icon name="cache" />
             </div>
-            <strong>{copy.emptyTitle}</strong>
-            <p>{copy.emptyBody}</p>
+            <strong>
+              {scopeProfileId !== "all" ? copy.scopeEmptyTitle : copy.emptyTitle}
+            </strong>
+            <p>{scopeProfileId !== "all" ? copy.scopeEmptyBody : copy.emptyBody}</p>
+            {scopeProfileId !== "all" && (
+              <button
+                type="button"
+                className="btn primary small"
+                onClick={() => setScopeProfileId("all")}
+              >
+                {copy.allProfiles}
+              </button>
+            )}
           </div>
         ) : (
           <div className="usage-table-wrap">

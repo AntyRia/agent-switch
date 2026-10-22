@@ -2364,6 +2364,10 @@ a:focus-visible,
   font-size: 12px;
 }
 
+.usage-empty .btn {
+  margin-top: 10px;
+}
+
 .usage-empty-inline {
   margin: 14px 0 0;
   font-size: 12px;

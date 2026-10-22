@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] - 2026-10-22
+
+### Fixed
+
+- The scope selector only lists profiles that actually have usage, and it
+  automatically falls back to "全部配置" if the selected profile disappears.
+- Added a visible "全部配置" reset next to the selector and inside the empty
+  state, so a down/misconfigured local profile can always be left.
+- The server overview only lists local profiles with usage; clicking a dead
+  profile no longer traps the page on an empty table.
+
 ## [0.4.6] - 2026-10-22
 
 ### Changed
