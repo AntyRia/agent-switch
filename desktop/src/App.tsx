@@ -272,7 +272,7 @@ function AppInner() {
         </div>
       </header>
 
-      <main className="content">
+      <main className={"content" + (view.name === "usage" ? " content-wide" : "")}>
         {view.name === "list" && (
           <ListView
             profiles={profiles}

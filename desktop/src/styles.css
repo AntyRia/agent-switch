@@ -1198,6 +1198,279 @@ a:focus-visible,
   }
 }
 
+/* ---------- Usage Insights: spacious layout ---------- */
+
+.content-wide {
+  max-width: none;
+  padding: 26px 34px 56px;
+}
+
+.usage-page {
+  max-width: 1760px;
+  margin: 0 auto;
+  padding: 2px 0 48px;
+}
+
+.usage-header h1 {
+  font-size: 32px;
+}
+
+.usage-subtitle {
+  max-width: 980px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.usage-eyebrow {
+  font-size: 11px;
+}
+
+.usage-actions {
+  gap: 12px;
+  padding-top: 6px;
+}
+
+.usage-range button {
+  font-size: 13px;
+  padding: 6px 12px;
+}
+
+.usage-stats-grid {
+  gap: 18px;
+  margin: 24px 0 20px;
+}
+
+.usage-stat {
+  padding: 20px 22px 18px;
+  border-radius: 14px;
+}
+
+.usage-stat-head {
+  font-size: 13px;
+}
+
+.usage-stat-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+}
+
+.usage-stat-value {
+  margin-top: 10px;
+  font-size: 32px;
+}
+
+.usage-stat-sub {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.usage-main-grid {
+  grid-template-columns: minmax(0, 1fr) 390px;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+
+.usage-card {
+  padding: 22px 24px;
+  border-radius: 14px;
+}
+
+.usage-card-head h3 {
+  font-size: 16px;
+}
+
+.usage-card-head p {
+  margin-top: 4px;
+  font-size: 12.5px;
+}
+
+.usage-legend-inline {
+  gap: 16px;
+  font-size: 11.5px;
+}
+
+.usage-banner {
+  padding: 15px 18px;
+}
+
+.usage-banner strong {
+  font-size: 13.5px;
+}
+
+.usage-banner p {
+  font-size: 13px;
+}
+
+.usage-table-card {
+  margin-top: 20px;
+}
+
+.usage-table-head {
+  margin-bottom: 16px;
+}
+
+.usage-search,
+.usage-select {
+  height: 36px;
+  font-size: 13px;
+}
+
+.usage-search {
+  width: 260px;
+}
+
+.usage-table {
+  min-width: 1080px;
+  font-size: 13.5px;
+}
+
+.usage-table th {
+  padding: 12px 14px;
+  font-size: 11.5px;
+}
+
+.usage-table td {
+  padding: 14px 16px;
+}
+
+.usage-table td.num {
+  white-space: nowrap;
+}
+
+.usage-table-wrap {
+  max-height: 640px;
+}
+
+.usage-session-cell {
+  min-width: 280px;
+  max-width: 460px;
+  gap: 11px;
+}
+
+.usage-session-cell strong {
+  font-size: 13.5px;
+}
+
+.usage-session-cell span {
+  font-size: 11.5px;
+}
+
+.usage-model {
+  max-width: 200px;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+
+.usage-token-main {
+  font-size: 13.5px;
+}
+
+.usage-hit-badge {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.usage-time {
+  font-size: 12px;
+}
+
+.usage-server-stats span {
+  font-size: 12px;
+}
+
+.usage-server-stats strong {
+  font-size: 14px;
+}
+
+.usage-ring-value {
+  font-size: 24px;
+}
+
+.usage-ring-label {
+  font-size: 10.5px;
+}
+
+.usage-drawer {
+  width: 520px;
+  padding: 26px 26px 44px;
+}
+
+.usage-drawer-head h2 {
+  font-size: 20px;
+}
+
+.usage-drawer-kpis strong {
+  font-size: 18px;
+}
+
+.usage-composition {
+  height: 14px;
+}
+
+.usage-turn-chart {
+  height: 130px;
+}
+
+@media (max-width: 1100px) {
+  .content-wide {
+    padding: 20px 18px 40px;
+  }
+
+  .usage-page {
+    padding-bottom: 36px;
+  }
+
+  .usage-header h1 {
+    font-size: 28px;
+  }
+
+  .usage-stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usage-main-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .usage-stat-value {
+    font-size: 28px;
+  }
+
+  .usage-search {
+    width: 200px;
+  }
+
+  .usage-drawer {
+    width: 480px;
+  }
+}
+
+@media (max-width: 700px) {
+  .content-wide {
+    padding: 14px 12px 32px;
+  }
+
+  .usage-header h1 {
+    font-size: 25px;
+  }
+
+  .usage-stats-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .usage-search {
+    width: auto;
+    flex: 1;
+  }
+
+  .usage-drawer {
+    width: 100%;
+    max-width: 100vw;
+  }
+}
+
+
 /* ---------- Usage Insights ---------- */
 
 .usage-page {
@@ -1898,6 +2171,15 @@ a:focus-visible,
   height: 6px;
   border-radius: 50%;
   background: currentColor;
+}
+
+.usage-hit-badge .usage-hit-sv {
+  font-style: normal;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  opacity: 0.8;
+  margin-left: 1px;
 }
 
 .usage-hit-badge.high {

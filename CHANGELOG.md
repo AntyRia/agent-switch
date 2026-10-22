@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-10-22
+
+### Added
+
+- The session table now falls back to the profile-wide server cache hit rate
+  (badge `SV`) when a request has no client cache fields, instead of showing
+  a misleading `0.0%`. The value comes from vLLM `/metrics` and is labelled
+  as profile-wide.
+- The banner explains the vLLM `--enable-prompt-tokens-details` flag needed
+  for per-request `cache_read_input_tokens`; with it, new turns show their
+  own exact cache hit rate and do not use the SV fallback.
+
+### Notes
+
+- Requests made before the flag was enabled keep the SV aggregate; historical
+  per-request cache counts cannot be reconstructed.
+
 ## [0.4.1] - 2026-10-22
 
 ### Fixed

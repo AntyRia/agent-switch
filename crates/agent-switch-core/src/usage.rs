@@ -310,6 +310,13 @@ fn scan_claude(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
             cache_creation_tokens: u64_field(u, "cache_creation_input_tokens"),
             model,
         };
+        if turn.input_tokens == 0
+            && turn.output_tokens == 0
+            && turn.cache_read_tokens == 0
+            && turn.cache_creation_tokens == 0
+        {
+            continue;
+        }
         if !seen.contains_key(&id) {
             order.push(id.clone());
         }
@@ -429,14 +436,22 @@ fn scan_codex(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
             // with the Claude parser.
             let last_input = u64_field(last, "input_tokens");
             let last_cached = u64_field(last, "cached_input_tokens");
-            turns.push(TurnUsage {
+            let turn = TurnUsage {
                 timestamp: ts,
                 input_tokens: last_input.saturating_sub(last_cached),
                 output_tokens: u64_field(last, "output_tokens"),
                 cache_read_tokens: last_cached,
                 cache_creation_tokens: 0,
                 model: model.clone(),
-            });
+            };
+            if turn.input_tokens == 0
+                && turn.output_tokens == 0
+                && turn.cache_read_tokens == 0
+                && turn.cache_creation_tokens == 0
+            {
+                continue;
+            }
+            turns.push(turn);
         }
     }
 
