@@ -1325,6 +1325,38 @@ a:focus-visible,
   color: #334155;
 }
 
+.usage-export-note {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px 13px;
+  border: 1px solid #bbf7d0;
+  border-radius: 9px;
+  background: #f0fdf4;
+  color: #166534;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.usage-export-note.error {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.usage-export-note button {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 2px;
+}
+
 .usage-stats-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

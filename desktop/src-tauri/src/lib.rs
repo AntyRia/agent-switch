@@ -22,6 +22,7 @@ pub fn run() {
             commands::list_sessions,
             commands::list_session_usage,
             commands::get_server_cache,
+            commands::export_usage_csv,
             commands::resume_session,
             commands::set_session_pinned,
             commands::set_session_title,

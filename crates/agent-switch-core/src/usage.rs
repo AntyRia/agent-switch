@@ -22,6 +22,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::engine::Engine;
+use crate::error::Result;
 use crate::profile_store::ProfileStore;
 
 /// Only the newest N turns travel to the UI (the totals still cover all).
@@ -112,8 +113,8 @@ fn usage_for_file(path: &Path, engine: Engine, profile_id: &str) -> Option<Sessi
     }
 
     let mut usage = match engine {
-        Engine::Claude => scan_claude(path),
-        Engine::Codex => scan_codex(path),
+        Engine::Claude => scan_claude(path, Some(MAX_TURNS)),
+        Engine::Codex => scan_codex(path, Some(MAX_TURNS)),
     }?;
     if usage.turns == 0 {
         return None;
@@ -138,7 +139,115 @@ fn usage_for_file(path: &Path, engine: Engine, profile_id: &str) -> Option<Sessi
     Some(usage)
 }
 
-fn scan_claude(path: &Path) -> Option<SessionUsage> {
+#[derive(Debug, Serialize)]
+pub struct CsvExport {
+    pub path: String,
+    pub rows: usize,
+    pub sessions: usize,
+}
+
+/// Write one row per assistant request / Codex token_count event across
+/// every session. Unlike the UI payload this keeps every turn (the page only
+/// ships the newest MAX_TURNS for latency reasons).
+pub fn export_csv(store: &ProfileStore, path: &Path) -> Result<CsvExport> {
+    let entries = crate::sessions::session_file_entries(store)?;
+    let meta = crate::sessions::load_meta(store);
+    let profiles = store.list().unwrap_or_default();
+    let names: HashMap<&str, &str> = profiles
+        .iter()
+        .map(|p| (p.id.as_str(), p.name.as_str()))
+        .collect();
+
+    let mut lines: Vec<(i64, String)> = Vec::new();
+    let mut sessions = 0usize;
+    for (file, engine, profile_id) in entries {
+        let usage = match engine {
+            Engine::Claude => scan_claude(&file, None),
+            Engine::Codex => scan_codex(&file, None),
+        };
+        let Some(usage) = usage else { continue };
+        if usage.per_turn.is_empty() {
+            continue;
+        }
+        sessions += 1;
+        let title = meta
+            .titles
+            .get(&usage.session_id)
+            .cloned()
+            .unwrap_or_default();
+        let profile_name = names
+            .get(profile_id.as_str())
+            .copied()
+            .unwrap_or("")
+            .to_string();
+        for (index, turn) in usage.per_turn.iter().enumerate() {
+            let total =
+                turn.input_tokens + turn.cache_creation_tokens + turn.cache_read_tokens;
+            let rate = if total > 0 {
+                turn.cache_read_tokens as f64 / total as f64
+            } else {
+                0.0
+            };
+            let line = format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{:.4}",
+                csv_escape(&iso_ts(turn.timestamp)),
+                csv_escape(&usage.session_id),
+                csv_escape(&title),
+                csv_escape(&profile_id),
+                csv_escape(&profile_name),
+                csv_escape(engine.value()),
+                csv_escape(&turn.model),
+                index + 1,
+                turn.input_tokens,
+                turn.cache_read_tokens,
+                turn.cache_creation_tokens,
+                turn.output_tokens,
+                total,
+                rate
+            );
+            lines.push((turn.timestamp, line));
+        }
+    }
+    lines.sort_by_key(|(ts, _)| *ts);
+
+    let mut out = String::from(
+        "\u{FEFF}timestamp,session_id,session_title,profile_id,profile_name,engine,model,request_index,input_tokens,cache_read_tokens,cache_creation_tokens,output_tokens,total_prompt_tokens,cache_hit_rate\n",
+    );
+    for (_, line) in &lines {
+        out.push_str(line);
+        out.push('\n');
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(path, out)?;
+    Ok(CsvExport {
+        path: path.to_string_lossy().into_owned(),
+        rows: lines.len(),
+        sessions,
+    })
+}
+
+fn iso_ts(ts: i64) -> String {
+    if ts <= 0 {
+        return String::new();
+    }
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+fn csv_escape(value: &str) -> String {
+    if value.chars().any(|c| matches!(c, ',' | '"' | '\n' | '\r')) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+fn scan_claude(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
     let file = std::fs::File::open(path).ok()?;
     let reader = BufReader::new(file);
 
@@ -234,10 +343,9 @@ fn scan_claude(path: &Path) -> Option<SessionUsage> {
         .map(|(m, _)| m)
         .unwrap_or_default();
     let turn_count = turns.len() as u32;
-    let per_turn = if turns.len() > MAX_TURNS {
-        turns[turns.len() - MAX_TURNS..].to_vec()
-    } else {
-        turns
+    let per_turn = match max_turns {
+        Some(max) if turns.len() > max => turns[turns.len() - max..].to_vec(),
+        _ => turns,
     };
 
     Some(SessionUsage {
@@ -257,7 +365,7 @@ fn scan_claude(path: &Path) -> Option<SessionUsage> {
     })
 }
 
-fn scan_codex(path: &Path) -> Option<SessionUsage> {
+fn scan_codex(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
     let file = std::fs::File::open(path).ok()?;
     let reader = BufReader::new(file);
 
@@ -341,8 +449,10 @@ fn scan_codex(path: &Path) -> Option<SessionUsage> {
         0.0
     };
     let turn_count = turns.len().max(1) as u32;
-    if turns.len() > MAX_TURNS {
-        turns = turns[turns.len() - MAX_TURNS..].to_vec();
+    if let Some(max) = max_turns {
+        if turns.len() > max {
+            turns = turns[turns.len() - max..].to_vec();
+        }
     }
 
     Some(SessionUsage {
@@ -413,7 +523,7 @@ mod tests {
         let path = dir.join("abc.jsonl");
         let line = r#"{"type":"assistant","timestamp":"2026-10-22T03:00:00Z","sessionId":"abc","message":{"id":"msg_1","model":"test-model","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":900,"cache_creation_input_tokens":0}}}"#;
         std::fs::write(&path, format!("{}\n{}\n", line, line)).unwrap();
-        let usage = scan_claude(&path).unwrap();
+        let usage = scan_claude(&path, Some(MAX_TURNS)).unwrap();
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.output_tokens, 10);
         assert_eq!(usage.cache_read_tokens, 900);
@@ -440,6 +550,25 @@ mod tests {
                 usage.cache_read_tokens,
                 usage.cache_hit_rate
             );
+        }
+    }
+
+    /// Manual diagnostic: export the full per-request history to a temp CSV.
+    /// cargo test -p agent-switch-core dump_csv -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn dump_csv() {
+        let store = ProfileStore::new();
+        let path = std::env::temp_dir().join("agent-switch-usage.csv");
+        let result = export_csv(&store, &path).unwrap();
+        println!(
+            "rows={} sessions={} path={}",
+            result.rows, result.sessions, result.path
+        );
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            for line in text.lines().take(4) {
+                println!("{line}");
+            }
         }
     }
 }

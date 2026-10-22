@@ -148,6 +148,13 @@ export interface ServerCacheStats {
   running: number;
 }
 
+/** Result of a full-history CSV export. */
+export interface CsvExport {
+  path: string;
+  rows: number;
+  sessions: number;
+}
+
 export interface Status {
   codex_found: boolean;
   codex_version: string | null;
@@ -254,6 +261,8 @@ export const api = {
   listSessionUsage: (): Promise<SessionUsage[]> => invoke("list_session_usage"),
   getServerCache: (profile_id: string): Promise<ServerCacheStats> =>
     invoke("get_server_cache", { profileId: profile_id }),
+  exportUsageCsv: (path: string): Promise<CsvExport> =>
+    invoke("export_usage_csv", { path }),
   resumeSession: (session_id: string): Promise<LaunchResult> =>
     invoke("resume_session", { sessionId: session_id }),
   setSessionPinned: (session_id: string, pinned: boolean): Promise<void> =>

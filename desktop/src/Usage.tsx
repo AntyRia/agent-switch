@@ -11,6 +11,7 @@
 // matches the app's clean light theme.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   api,
   errorMessage,
@@ -36,6 +37,11 @@ const ZH = {
     "每个会话的 token 消耗、逐轮趋势与缓存命中。客户端数字来自本地 transcript，服务端数字来自 vLLM /metrics。",
   refresh: "刷新",
   loading: "正在扫描会话…",
+  exportCsv: "导出 CSV",
+  exporting: "导出中…",
+  exportDone: "已导出",
+  exportFailed: "导出失败",
+  exportHint: "导出全部会话的逐条请求（不受筛选影响）",
   rangeAll: "全部",
   range7: "近 7 天",
   range30: "近 30 天",
@@ -101,6 +107,11 @@ const EN: Copy = {
     "Token spend, per-turn trends and cache hits for every session. Client numbers come from local transcripts; server numbers come from vLLM /metrics.",
   refresh: "Refresh",
   loading: "Scanning sessions…",
+  exportCsv: "Export CSV",
+  exporting: "Exporting…",
+  exportDone: "Exported",
+  exportFailed: "Export failed",
+  exportHint: "Every request across all sessions (filters do not apply)",
   rangeAll: "All",
   range7: "7 days",
   range30: "30 days",
@@ -696,6 +707,8 @@ export default function UsagePage({ profiles }: Props) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
   const [serverProfileId, setServerProfileId] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportNote, setExportNote] = useState<{ text: string; ok: boolean } | null>(null);
   const loadSeq = useRef(0);
 
   const load = useCallback(async (showLoading = false) => {
@@ -716,6 +729,26 @@ export default function UsagePage({ profiles }: Props) {
       if (seq === loadSeq.current) setLoading(false);
     }
   }, []);
+
+  const exportCsv = useCallback(async () => {
+    try {
+      const path = await save({
+        defaultPath: "agent-switch-usage.csv",
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (!path) return;
+      setExporting(true);
+      const result = await api.exportUsageCsv(path);
+      setExportNote({
+        text: copy.exportDone + " " + result.rows + " rows · " + result.path,
+        ok: true,
+      });
+    } catch (e) {
+      setExportNote({ text: copy.exportFailed + ": " + errorMessage(e), ok: false });
+    } finally {
+      setExporting(false);
+    }
+  }, [copy.exportDone, copy.exportFailed]);
 
   useEffect(() => {
     void load(true);
@@ -871,6 +904,15 @@ export default function UsagePage({ profiles }: Props) {
           <button
             type="button"
             className="btn secondary small"
+            onClick={() => void exportCsv()}
+            disabled={exporting}
+            title={copy.exportHint}
+          >
+            {exporting ? copy.exporting : copy.exportCsv}
+          </button>
+          <button
+            type="button"
+            className="btn secondary small"
             onClick={() => void load(true)}
             disabled={loading}
           >
@@ -882,6 +924,15 @@ export default function UsagePage({ profiles }: Props) {
       {error && (
         <div className="usage-error">
           {copy.errorPrefix}: {error}
+        </div>
+      )}
+
+      {exportNote && (
+        <div className={"usage-export-note" + (exportNote.ok ? "" : " error")}>
+          <span>{exportNote.text}</span>
+          <button type="button" onClick={() => setExportNote(null)} aria-label="dismiss">
+            ✕
+          </button>
         </div>
       )}
 

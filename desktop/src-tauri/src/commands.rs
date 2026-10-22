@@ -680,6 +680,21 @@ pub async fn get_server_cache(
     .map_err(|e| e.to_string())
 }
 
+/// Export every assistant request across all sessions as CSV. The user
+/// picks the destination with the dialog plugin; the backend writes it.
+#[tauri::command]
+pub async fn export_usage_csv(
+    path: String,
+) -> Result<agent_switch_core::usage::CsvExport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ProfileStore::new();
+        agent_switch_core::usage::export_csv(&store, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
+}
+
 /// Pin or unpin a pool session (persisted in sessions-meta.json).
 #[tauri::command]
 pub async fn set_session_pinned(session_id: String, pinned: bool) -> Result<(), String> {

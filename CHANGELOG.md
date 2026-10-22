@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-22
+
+### Added
+
+- **CSV export** on the Usage page: one row per assistant request (Claude)
+  or `token_count` event (Codex) across every session, with timestamp,
+  session/profile/model, request index, input / cache-read / cache-write /
+  output tokens, total prompt tokens and per-request cache hit rate.
+- Native save dialog (`@tauri-apps/plugin-dialog`) and a UTF-8 BOM so Excel
+  opens Chinese titles correctly. The export always covers the full history,
+  independent of the page filters and of the 200-turn UI cap.
+- New Tauri command `export_usage_csv` and core `usage::export_csv`.
+
+### Notes
+
+- The CSV is generated from the same de-duplicated transcript parsing as the
+  dashboard; cache columns stay 0 when the gateway does not report them.
+
 ## [0.3.0] - 2026-10-22
 
 ### Added
