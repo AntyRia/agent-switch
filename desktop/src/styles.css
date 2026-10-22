@@ -1594,6 +1594,33 @@ a:focus-visible,
   color: var(--muted);
 }
 
+/* Summary: two wide cards */
+.usage-stats-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin: 26px 0 22px;
+}
+
+.usage-stat {
+  padding: 24px 26px 22px;
+}
+
+.usage-stat-value {
+  margin-top: 12px;
+  font-size: 38px;
+}
+
+.usage-stat-icon {
+  width: 34px;
+  height: 34px;
+}
+
+@media (max-width: 700px) {
+  .usage-stats-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 
 
 /* ---------- Usage Insights ---------- */

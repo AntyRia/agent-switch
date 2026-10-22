@@ -80,7 +80,6 @@ const ZH = {
   colModel: "模型",
   colTokens: "累计输入 / 缓存读 / 输出",
   colHit: "近 30 轮",
-  recentHitLabel: "近 30 轮命中率",
   colTurns: "轮次",
   colTime: "最近活动",
   emptyTitle: "还没有用量数据",
@@ -162,7 +161,6 @@ const EN: Copy = {
   colModel: "Model",
   colTokens: "Total input / cache read / output",
   colHit: "Last 30 turns",
-  recentHitLabel: "Last 30 turns hit rate",
   colTurns: "Turns",
   colTime: "Last active",
   emptyTitle: "No usage yet",
@@ -973,18 +971,6 @@ export default function UsagePage({ profiles }: Props) {
     };
   }, [filtered]);
 
-  const recent = useMemo(() => {
-    let prompt = 0;
-    let cache = 0;
-    for (const { usage: u } of filtered) {
-      const r = recentCache(u);
-      if (!r.reported) continue;
-      prompt += r.prompt;
-      cache += r.cache;
-    }
-    return { rate: prompt > 0 ? cache / prompt : 0, prompt };
-  }, [filtered]);
-
   const days = useMemo<DayPoint[]>(() => {
     const list: DayPoint[] = [];
     const now = new Date();
@@ -1165,35 +1151,14 @@ export default function UsagePage({ profiles }: Props) {
         <StatCard
           label={copy.statPrompt}
           value={fmtTokens(totals.prompt)}
-          sub={copy.statPromptSub + " · " + fmtTokens(totals.input) + " uncached"}
+          sub={copy.statPromptSub}
           icon="tokens"
-        />
-        <StatCard
-          label={copy.recentHitLabel}
-          value={recent.prompt > 0 ? fmtPercent(recent.rate) : "—"}
-          sub={
-            copy.statCacheRead +
-            " " +
-            fmtTokens(totals.cacheRead) +
-            " · " +
-            copy.cumulativeHit +
-            " " +
-            fmtPercent(totals.hit)
-          }
-          icon="cache"
-          tone={recent.prompt > 0 ? hitTone(recent.rate) : undefined}
         />
         <StatCard
           label={copy.statOutput}
           value={fmtTokens(totals.output)}
           sub={copy.statOutputSub}
           icon="output"
-        />
-        <StatCard
-          label={copy.statSessions}
-          value={filtered.length + " / " + totals.turns}
-          sub={copy.statSessionsSub}
-          icon="sessions"
         />
       </div>
 

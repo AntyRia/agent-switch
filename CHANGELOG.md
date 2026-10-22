@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] - 2026-10-22
+
+### Changed
+
+- Simplified the summary area to two wide cards: **total prompt tokens** and
+  **total output tokens**. The recent-hit-rate and session-count cards were
+  removed; cache hit rate remains in the session table, server card and
+  detail drawer.
+
 ## [0.4.7] - 2026-10-22
 
 ### Fixed
