@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] - 2026-10-22
+
+### Changed
+
+- The session cache badge and the drawer ring now use the **last 30 turns**
+  (weighted) instead of a single last turn. A single turn was noisy when a
+  new request carried a large uncached prefix — e.g. 49% on the last turn
+  versus 97% over the recent window and on the server.
+- The top "cache read" card shows both the recent (30-turn) and cumulative
+  rates; the drawer keeps the cumulative line separately. Historical
+  pre-flag turns no longer dominate the headline number.
+- One page scope: the header "配置范围" selector now drives the stat cards,
+  trend, server card and session table together. The independent table
+  profile filter and the server-card dropdown were removed.
+- With "全部配置", the server card lists every local vLLM profile with its
+  own hit rate; click a profile to scope the whole page. Selecting a
+  relay/official profile shows "no /metrics" and scopes the client-side data.
+
 ## [0.4.4] - 2026-10-22
 
 ### Fixed

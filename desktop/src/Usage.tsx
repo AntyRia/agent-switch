@@ -47,6 +47,7 @@ const ZH = {
   range30: "近 30 天",
   searchPlaceholder: "搜索会话、模型、配置…",
   allProfiles: "全部配置",
+  scopeLabel: "配置范围",
   allEngines: "全部 CLI",
   statPrompt: "总处理 Tokens",
   statPromptSub: "输入 + 缓存读取 + 缓存写入",
@@ -65,18 +66,18 @@ const ZH = {
   bannerBody:
     "本地 vLLM 需要在启动参数加 --enable-prompt-tokens-details，Anthropic 入口才会返回 cache_read_input_tokens。旧请求没有该字段时，表格用 SV 标记该配置的服务端整体命中率（来自 vLLM /metrics）。",
   serverBadge: "SV",
-  serverFallbackHint: "最近一轮没有客户端 cache 字段，显示该配置的服务端整体命中率（vLLM /metrics）",
+  serverFallbackHint: "近 30 轮没有客户端 cache 字段，显示该配置的服务端整体命中率（vLLM /metrics）",
   trendTitle: "近 14 天趋势",
   trendSub: "柱：处理 tokens（浅色为未命中，绿色为缓存读取）；线：命中率",
   trendLegendPrompt: "未命中",
   trendLegendCache: "缓存读取",
   trendLegendHit: "命中率",
   tableTitle: "会话用量",
-  tableSub: "按最近活动排序，点击任意一行查看逐轮明细；最近一轮没有 cache 字段时用 SV 显示服务端整体命中率",
+  tableSub: "按最近活动排序，点击任意一行查看逐轮明细；近 30 轮没有 cache 字段时用 SV 显示服务端整体命中率",
   colSession: "会话",
   colModel: "模型",
   colTokens: "累计输入 / 缓存读 / 输出",
-  colHit: "最近一轮",
+  colHit: "近 30 轮",
   colTurns: "轮次",
   colTime: "最近活动",
   emptyTitle: "还没有用量数据",
@@ -92,6 +93,8 @@ const ZH = {
   serverRunning: "运行中",
   serverDown: "连不上 /metrics",
   serverNoProfile: "没有可用的本地配置",
+  serverRowHint: "切换到该配置",
+  serverListHint: "点击任意本地配置，上方统计和下方会话会一起切换",
   serverLocalOnly: "该配置不是本地 vLLM，不提供 /metrics；命中率以客户端 cache 字段为准",
   inputLabel: "未命中输入",
   cacheWriteLabel: "缓存写入",
@@ -122,6 +125,7 @@ const EN: Copy = {
   range30: "30 days",
   searchPlaceholder: "Search session, model, profile…",
   allProfiles: "All profiles",
+  scopeLabel: "Scope",
   allEngines: "All CLIs",
   statPrompt: "Prompt tokens",
   statPromptSub: "input + cache read + cache write",
@@ -140,18 +144,18 @@ const EN: Copy = {
   bannerBody:
     "Local vLLM needs --enable-prompt-tokens-details so the Anthropic endpoint returns cache_read_input_tokens. When a request has no cache fields, the table falls back to the profile-wide server rate from vLLM /metrics, marked SV.",
   serverBadge: "SV",
-  serverFallbackHint: "The last turn has no client cache fields; showing the profile-wide vLLM /metrics rate",
+  serverFallbackHint: "The last 30 turns have no client cache fields; showing the profile-wide vLLM /metrics rate",
   trendTitle: "Last 14 days",
   trendSub: "Bars: prompt tokens (pale = uncached, green = cache read); line: hit rate",
   trendLegendPrompt: "uncached",
   trendLegendCache: "cache read",
   trendLegendHit: "hit rate",
   tableTitle: "Session usage",
-  tableSub: "Newest first — click a row for the per-turn breakdown; SV = profile-wide server rate when the last turn has no cache fields",
+  tableSub: "Newest first — click a row for the per-turn breakdown; SV = profile-wide server rate when the last 30 turns have no cache fields",
   colSession: "Session",
   colModel: "Model",
   colTokens: "Total input / cache read / output",
-  colHit: "Last turn",
+  colHit: "Last 30 turns",
   colTurns: "Turns",
   colTime: "Last active",
   emptyTitle: "No usage yet",
@@ -167,6 +171,8 @@ const EN: Copy = {
   serverRunning: "Running",
   serverDown: "Cannot reach /metrics",
   serverNoProfile: "No local profile available",
+  serverRowHint: "Scope the page to this profile",
+  serverListHint: "Pick a local profile to scope the stats and sessions below",
   serverLocalOnly: "This profile is not a local vLLM endpoint; no /metrics — use the client cache fields",
   inputLabel: "Uncached input",
   cacheWriteLabel: "Cache write",
@@ -221,6 +227,22 @@ function timeAgo(ts: number, lang: "zh" | "en"): string {
   const d = Math.floor(diff / 86400);
   if (d < 30) return zh ? d + " 天前" : d + "d ago";
   return new Date(ts * 1000).toLocaleDateString();
+}
+
+function recentCache(
+  usage: SessionUsage,
+  window = 30,
+): { rate: number; prompt: number; cache: number; reported: boolean } {
+  let prompt = 0;
+  let cache = 0;
+  let reported = false;
+  for (const turn of usage.per_turn.slice(-window)) {
+    if (!turn.cache_reported) continue;
+    reported = true;
+    prompt += turn.input_tokens + turn.cache_creation_tokens + turn.cache_read_tokens;
+    cache += turn.cache_read_tokens;
+  }
+  return { rate: prompt > 0 ? cache / prompt : 0, prompt, cache, reported };
 }
 
 function Icon({ name }: { name: "tokens" | "cache" | "output" | "gauge" | "sessions" }) {
@@ -560,6 +582,81 @@ function ServerCard({
   );
 }
 
+function ServerPanel({
+  profiles,
+  scopeId,
+  statsById,
+  onScope,
+  copy,
+}: {
+  profiles: ProfileView[];
+  scopeId: string;
+  statsById: Record<string, ServerCacheStats>;
+  onScope: (id: string) => void;
+  copy: Copy;
+}) {
+  const local = profiles.filter(
+    (p) => p.base_url && /vllm|openai-compatible|openai/.test(p.provider_type),
+  );
+  const selected = scopeId !== "all" ? profiles.find((p) => p.id === scopeId) : null;
+  const selectedLocal = !!selected && local.some((p) => p.id === selected.id);
+
+  if (selected && selectedLocal) {
+    return <ServerCard profiles={profiles} profileId={selected.id} copy={copy} />;
+  }
+  if (selected && !selectedLocal) {
+    return (
+      <section className="usage-card usage-server-card">
+        <div className="usage-card-head">
+          <div>
+            <h3>{copy.serverTitle}</h3>
+            <p>{copy.serverSub}</p>
+          </div>
+        </div>
+        <p className="usage-empty-inline">{copy.serverLocalOnly}</p>
+      </section>
+    );
+  }
+  return (
+    <section className="usage-card usage-server-card">
+      <div className="usage-card-head">
+        <div>
+          <h3>{copy.serverTitle}</h3>
+          <p>{copy.serverSub}</p>
+        </div>
+      </div>
+      {local.length === 0 ? (
+        <p className="usage-empty-inline">{copy.serverNoProfile}</p>
+      ) : (
+        <div className="usage-server-list">
+          {local.map((p) => {
+            const s = statsById[p.id];
+            const tone = s?.ok ? hitTone(s.hit_rate) : "unreported";
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className="usage-server-row"
+                onClick={() => onScope(p.id)}
+                title={copy.serverRowHint}
+              >
+                <span className="usage-server-name">{p.name}</span>
+                <span className={"usage-server-rate " + tone}>
+                  {s?.ok ? fmtPercent(s.hit_rate) : "—"}
+                </span>
+                <span className="usage-server-meta">
+                  {s?.ok ? fmtTokens(s.hits) + " / " + fmtTokens(s.queries) : copy.loading}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <p className="usage-server-hint">{copy.serverListHint}</p>
+    </section>
+  );
+}
+
 function SessionDrawer({
   row,
   profiles,
@@ -577,16 +674,12 @@ function SessionDrawer({
 }) {
   const { usage, session } = row;
   const all = usage.total_prompt_tokens + usage.output_tokens;
-  const last = usage.per_turn[usage.per_turn.length - 1];
-  const lastPrompt = last
-    ? last.input_tokens + last.cache_creation_tokens + last.cache_read_tokens
-    : 0;
-  const lastRate = lastPrompt > 0 ? (last?.cache_read_tokens ?? 0) / lastPrompt : 0;
-  const reported = last ? last.cache_reported : usage.cache_reported;
+  const recent = recentCache(usage);
+  const reported = recent.reported;
   const server = serverByProfile[usage.profile_id];
-  const ringValue = reported ? lastRate : server ? server.hit_rate : 0;
+  const ringValue = reported ? recent.rate : server ? server.hit_rate : 0;
   const ringColor = reported
-    ? hitColor(lastRate)
+    ? hitColor(recent.rate)
     : server
       ? hitColor(server.hit_rate)
       : "#94a3b8";
@@ -732,11 +825,10 @@ export default function UsagePage({ profiles }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [range, setRange] = useState<"all" | "7d" | "30d">("all");
-  const [profileFilter, setProfileFilter] = useState("all");
+  const [scopeProfileId, setScopeProfileId] = useState("all");
   const [engineFilter, setEngineFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Row | null>(null);
-  const [serverProfileId, setServerProfileId] = useState("");
   const [exporting, setExporting] = useState(false);
   const [exportNote, setExportNote] = useState<{ text: string; ok: boolean } | null>(null);
   const loadSeq = useRef(0);
@@ -786,13 +878,6 @@ export default function UsagePage({ profiles }: Props) {
     return () => window.clearInterval(id);
   }, [load]);
 
-  useEffect(() => {
-    if (serverProfileId) return;
-    const local = profiles.filter((p) => /vllm|openai-compatible|openai/.test(p.provider_type));
-    const pick = local[0] ?? profiles.find((p) => p.base_url) ?? profiles[0];
-    if (pick) setServerProfileId(pick.id);
-  }, [profiles, serverProfileId]);
-
   const rows = useMemo<Row[]>(() => {
     if (!sessions || !usage) return [];
     const byId = new Map(sessions.map((s) => [s.session_id, s]));
@@ -809,7 +894,7 @@ export default function UsagePage({ profiles }: Props) {
     const q = search.trim().toLowerCase();
     return rows
       .filter(({ session, usage: u }) => {
-        if (profileFilter !== "all" && u.profile_id !== profileFilter) return false;
+        if (scopeProfileId !== "all" && u.profile_id !== scopeProfileId) return false;
         if (engineFilter !== "all" && u.engine !== engineFilter) return false;
         if (range !== "all") {
           const days = range === "7d" ? 7 : 30;
@@ -835,7 +920,7 @@ export default function UsagePage({ profiles }: Props) {
         (a, b) =>
           (b.usage.modified || b.session.modified) - (a.usage.modified || a.session.modified),
       );
-  }, [rows, profileFilter, engineFilter, range, search]);
+  }, [rows, scopeProfileId, engineFilter, range, search]);
 
   const totals = useMemo(() => {
     let prompt = 0;
@@ -861,6 +946,18 @@ export default function UsagePage({ profiles }: Props) {
       turns,
       hit: prompt > 0 ? cacheRead / prompt : 0,
     };
+  }, [filtered]);
+
+  const recent = useMemo(() => {
+    let prompt = 0;
+    let cache = 0;
+    for (const { usage: u } of filtered) {
+      const r = recentCache(u);
+      if (!r.reported) continue;
+      prompt += r.prompt;
+      cache += r.cache;
+    }
+    return { rate: prompt > 0 ? cache / prompt : 0, prompt };
   }, [filtered]);
 
   const days = useMemo<DayPoint[]>(() => {
@@ -896,21 +993,14 @@ export default function UsagePage({ profiles }: Props) {
     return list;
   }, [filtered]);
 
-  const profileOptions = useMemo(() => {
-    const ids = new Set(rows.map((r) => r.usage.profile_id));
-    return profiles.filter((p) => ids.has(p.id));
-  }, [rows, profiles]);
-
   const localProfileIds = useMemo(() => {
-    const local = new Set(
-      profiles
-        .filter((p) => /vllm|openai-compatible|openai/.test(p.provider_type))
-        .map((p) => p.id),
-    );
-    return Array.from(new Set(rows.map((r) => r.usage.profile_id)))
-      .filter((id) => local.has(id))
+    return profiles
+      .filter(
+        (p) => p.base_url && /vllm|openai-compatible|openai/.test(p.provider_type),
+      )
+      .map((p) => p.id)
       .sort();
-  }, [rows, profiles]);
+  }, [profiles]);
   const localProfileKey = localProfileIds.join(",");
   const [serverByProfile, setServerByProfile] = useState<Record<string, ServerCacheStats>>({});
 
@@ -951,6 +1041,10 @@ export default function UsagePage({ profiles }: Props) {
   }, [rows]);
 
   const showGatewayBanner = filtered.length > 0 && totals.cacheRead === 0;
+  const scopeName =
+    scopeProfileId === "all"
+      ? copy.allProfiles
+      : profiles.find((p) => p.id === scopeProfileId)?.name ?? scopeProfileId;
 
   return (
     <div className="usage-page">
@@ -961,6 +1055,21 @@ export default function UsagePage({ profiles }: Props) {
           <p className="usage-subtitle">{copy.subtitle}</p>
         </div>
         <div className="usage-actions">
+          <label className="usage-scope">
+            <span>{copy.scopeLabel}</span>
+            <select
+              className="usage-select"
+              value={scopeProfileId}
+              onChange={(e) => setScopeProfileId(e.target.value)}
+            >
+              <option value="all">{copy.allProfiles}</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="usage-range" role="group">
             {(["all", "7d", "30d"] as const).map((r) => (
               <button
@@ -1028,7 +1137,16 @@ export default function UsagePage({ profiles }: Props) {
         <StatCard
           label={copy.statCacheRead}
           value={fmtTokens(totals.cacheRead)}
-          sub={copy.cumulativeHit + " " + fmtPercent(totals.hit) + " · " + copy.statCacheReadSub}
+          sub={
+            (recent.prompt > 0
+              ? copy.colHit + " " + fmtPercent(recent.rate) + " · "
+              : "") +
+            copy.cumulativeHit +
+            " " +
+            fmtPercent(totals.hit) +
+            " · " +
+            copy.statCacheReadSub
+          }
           icon="cache"
           tone={totals.cacheRead > 0 ? hitTone(totals.hit) : undefined}
         />
@@ -1071,10 +1189,11 @@ export default function UsagePage({ profiles }: Props) {
           <TrendChart days={days} />
         </section>
 
-        <ServerCard
+        <ServerPanel
           profiles={profiles}
-          profileId={serverProfileId}
-          onProfileChange={setServerProfileId}
+          scopeId={scopeProfileId}
+          statsById={serverByProfile}
+          onScope={setScopeProfileId}
           copy={copy}
         />
       </div>
@@ -1086,24 +1205,15 @@ export default function UsagePage({ profiles }: Props) {
             <p>{copy.tableSub}</p>
           </div>
           <div className="usage-filters">
+            <span className="usage-scope-chip">
+              {copy.scopeLabel}: {scopeName}
+            </span>
             <input
               className="usage-search"
               placeholder={copy.searchPlaceholder}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
-            <select
-              className="usage-select"
-              value={profileFilter}
-              onChange={(e) => setProfileFilter(e.target.value)}
-            >
-              <option value="all">{copy.allProfiles}</option>
-              {profileOptions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
             <select
               className="usage-select"
               value={engineFilter}
@@ -1146,16 +1256,11 @@ export default function UsagePage({ profiles }: Props) {
               <tbody>
                 {filtered.map(({ session, usage: u }) => {
                   const server = serverByProfile[u.profile_id];
-                  const last = u.per_turn[u.per_turn.length - 1];
-                  const lastPrompt = last
-                    ? last.input_tokens + last.cache_creation_tokens + last.cache_read_tokens
-                    : 0;
-                  const lastRate =
-                    lastPrompt > 0 ? (last?.cache_read_tokens ?? 0) / lastPrompt : 0;
-                  const reported = last ? last.cache_reported : u.cache_reported;
-                  const unreported = !reported && server === undefined;
-                  const useServer = server !== undefined && (!reported || lastPrompt === 0);
-                  const hitRate = useServer && server ? server.hit_rate : lastRate;
+                  const recent = recentCache(u);
+                  const unreported = !recent.reported && server === undefined;
+                  const useServer =
+                    server !== undefined && (!recent.reported || recent.prompt === 0);
+                  const hitRate = useServer && server ? server.hit_rate : recent.rate;
                   const tone = hitTone(hitRate);
                   return (
                     <tr
