@@ -78,6 +78,7 @@ const ZH = {
   colModel: "模型",
   colTokens: "累计输入 / 缓存读 / 输出",
   colHit: "近 30 轮",
+  recentHitLabel: "近 30 轮命中率",
   colTurns: "轮次",
   colTime: "最近活动",
   emptyTitle: "还没有用量数据",
@@ -95,6 +96,7 @@ const ZH = {
   serverNoProfile: "没有可用的本地配置",
   serverRowHint: "切换到该配置",
   serverListHint: "点击任意本地配置，上方统计和下方会话会一起切换",
+  serverScopeNote: "服务端统计自 vLLM 启动，包含该配置上的所有会话与工具；客户端为本页所选范围最近 30 轮。",
   serverLocalOnly: "该配置不是本地 vLLM，不提供 /metrics；命中率以客户端 cache 字段为准",
   inputLabel: "未命中输入",
   cacheWriteLabel: "缓存写入",
@@ -156,6 +158,7 @@ const EN: Copy = {
   colModel: "Model",
   colTokens: "Total input / cache read / output",
   colHit: "Last 30 turns",
+  recentHitLabel: "Last 30 turns hit rate",
   colTurns: "Turns",
   colTime: "Last active",
   emptyTitle: "No usage yet",
@@ -173,6 +176,7 @@ const EN: Copy = {
   serverNoProfile: "No local profile available",
   serverRowHint: "Scope the page to this profile",
   serverListHint: "Pick a local profile to scope the stats and sessions below",
+  serverScopeNote: "Server counters run since vLLM started and include every session/tool on this profile; the client rate is the selected scope's last 30 turns.",
   serverLocalOnly: "This profile is not a local vLLM endpoint; no /metrics — use the client cache fields",
   inputLabel: "Uncached input",
   cacheWriteLabel: "Cache write",
@@ -578,6 +582,7 @@ function ServerCard({
           </div>
         </div>
       )}
+      <p className="usage-server-scope-note">{copy.serverScopeNote}</p>
     </section>
   );
 }
@@ -653,6 +658,7 @@ function ServerPanel({
         </div>
       )}
       <p className="usage-server-hint">{copy.serverListHint}</p>
+      <p className="usage-server-scope-note">{copy.serverScopeNote}</p>
     </section>
   );
 }
@@ -1135,20 +1141,19 @@ export default function UsagePage({ profiles }: Props) {
           icon="tokens"
         />
         <StatCard
-          label={copy.statCacheRead}
-          value={fmtTokens(totals.cacheRead)}
+          label={copy.recentHitLabel}
+          value={recent.prompt > 0 ? fmtPercent(recent.rate) : "—"}
           sub={
-            (recent.prompt > 0
-              ? copy.colHit + " " + fmtPercent(recent.rate) + " · "
-              : "") +
+            copy.statCacheRead +
+            " " +
+            fmtTokens(totals.cacheRead) +
+            " · " +
             copy.cumulativeHit +
             " " +
-            fmtPercent(totals.hit) +
-            " · " +
-            copy.statCacheReadSub
+            fmtPercent(totals.hit)
           }
           icon="cache"
-          tone={totals.cacheRead > 0 ? hitTone(totals.hit) : undefined}
+          tone={recent.prompt > 0 ? hitTone(recent.rate) : undefined}
         />
         <StatCard
           label={copy.statOutput}

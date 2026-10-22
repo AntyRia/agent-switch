@@ -1587,6 +1587,13 @@ a:focus-visible,
   color: var(--muted);
 }
 
+.usage-server-scope-note {
+  margin: 14px 0 0;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
 
 
 /* ---------- Usage Insights ---------- */

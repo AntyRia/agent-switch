@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-10-22
+
+### Changed
+
+- The primary cache stat is now the **last-30-turn hit rate** (97% on warm
+  sessions), with cumulative cache tokens and the cumulative rate as a
+  secondary line. This removes the 2.9% headline that was dominated by the
+  thousands of pre-flag turns.
+- Added a scope note to the server card: server counters run since vLLM
+  started and include every session/tool on that profile, while the client
+  rate is the selected scope's last 30 turns.
+
 ## [0.4.5] - 2026-10-22
 
 ### Changed
