@@ -1404,6 +1404,17 @@ a:focus-visible,
   font-size: 18px;
 }
 
+.usage-cumulative {
+  margin: -4px 0 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.usage-cumulative strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 .usage-composition {
   height: 14px;
 }
@@ -2195,6 +2206,11 @@ a:focus-visible,
 .usage-hit-badge.low {
   color: #b91c1c;
   background: #fef2f2;
+}
+
+.usage-hit-badge.unreported {
+  color: #64748b;
+  background: #f1f5f9;
 }
 
 .usage-time {

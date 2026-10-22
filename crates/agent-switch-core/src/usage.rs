@@ -37,6 +37,8 @@ pub struct TurnUsage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// True when the gateway actually included cache fields (even if zero).
+    pub cache_reported: bool,
     pub model: String,
 }
 
@@ -50,6 +52,8 @@ pub struct SessionUsage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// True when at least one turn carried cache fields.
+    pub cache_reported: bool,
     /// input + cache_creation + cache_read (Claude) or input (Codex).
     pub total_prompt_tokens: u64,
     /// cache_read / total_prompt_tokens, 0..1.
@@ -302,12 +306,15 @@ fn scan_claude(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
             *model_counts.entry(model.clone()).or_insert(0) += 1;
         }
 
+        let cache_reported = u.get("cache_read_input_tokens").is_some()
+            || u.get("cache_creation_input_tokens").is_some();
         let turn = TurnUsage {
             timestamp: ts,
             input_tokens: u64_field(u, "input_tokens"),
             output_tokens: u64_field(u, "output_tokens"),
             cache_read_tokens: u64_field(u, "cache_read_input_tokens"),
             cache_creation_tokens: u64_field(u, "cache_creation_input_tokens"),
+            cache_reported,
             model,
         };
         if turn.input_tokens == 0
@@ -350,6 +357,7 @@ fn scan_claude(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
         .map(|(m, _)| m)
         .unwrap_or_default();
     let turn_count = turns.len() as u32;
+    let cache_reported = turns.iter().any(|t| t.cache_reported);
     let per_turn = match max_turns {
         Some(max) if turns.len() > max => turns[turns.len() - max..].to_vec(),
         _ => turns,
@@ -364,6 +372,7 @@ fn scan_claude(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
         output_tokens,
         cache_read_tokens,
         cache_creation_tokens,
+        cache_reported,
         total_prompt_tokens,
         cache_hit_rate,
         turns: turn_count,
@@ -442,6 +451,7 @@ fn scan_codex(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
                 output_tokens: u64_field(last, "output_tokens"),
                 cache_read_tokens: last_cached,
                 cache_creation_tokens: 0,
+                cache_reported: last.get("cached_input_tokens").is_some(),
                 model: model.clone(),
             };
             if turn.input_tokens == 0
@@ -464,6 +474,7 @@ fn scan_codex(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
         0.0
     };
     let turn_count = turns.len().max(1) as u32;
+    let cache_reported = turns.iter().any(|t| t.cache_reported);
     if let Some(max) = max_turns {
         if turns.len() > max {
             turns = turns[turns.len() - max..].to_vec();
@@ -479,6 +490,7 @@ fn scan_codex(path: &Path, max_turns: Option<usize>) -> Option<SessionUsage> {
         output_tokens: output,
         cache_read_tokens: cached,
         cache_creation_tokens: 0,
+        cache_reported,
         total_prompt_tokens,
         cache_hit_rate,
         turns: turn_count,

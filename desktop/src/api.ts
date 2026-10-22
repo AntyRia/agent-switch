@@ -113,6 +113,8 @@ export interface TurnUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  /** True when the gateway actually included cache fields (even if zero). */
+  cache_reported: boolean;
   model: string;
 }
 
@@ -126,6 +128,8 @@ export interface SessionUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_creation_tokens: number;
+  /** True when at least one turn carried cache fields. */
+  cache_reported: boolean;
   /** input + cache_creation + cache_read (Claude), or input (Codex). */
   total_prompt_tokens: number;
   /** cache_read / total_prompt_tokens, 0..1. */

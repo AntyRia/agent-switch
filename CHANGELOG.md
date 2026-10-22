@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-10-22
+
+### Fixed
+
+- Unified the cache metrics across the page: the top cards and the table's
+  token column are cumulative, while the table badge and the drawer ring are
+  the last turn; the drawer now also shows the cumulative rate explicitly.
+- Distinguish "the gateway did not report cache fields" from a real 0%: a new
+  `cache_reported` flag is derived from the transcript, and the table shows
+  `未上报` (not `0.0%`) when neither client nor server data exists.
+- The server-cache dropdown now lists every profile with a base URL,
+  including relays and official endpoints; non-local profiles show a note
+  instead of silently missing from the list.
+
+### Notes
+
+- Local vLLM needs `--enable-prompt-tokens-details` for per-request cache
+  fields; without it the table uses the profile-wide `/metrics` value (SV).
+
 ## [0.4.2] - 2026-10-22
 
 ### Added
