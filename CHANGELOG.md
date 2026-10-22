@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-10-22
+
+### Fixed
+
+- Refresh `Cargo.lock` for the 0.4.x version bump so `cargo test --locked`
+  and the GitHub release workflow no longer fail before building. The 0.4.3
+  tag was withdrawn before any assets were published.
+
 ## [0.4.3] - 2026-10-22
 
 ### Fixed
