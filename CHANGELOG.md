@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-22
+
+### Fixed
+
+- Windows auto-update failed with `Windows 找不到 '\\' 文件`: the detached
+  `cmd /C "... start "" "..." "` line was re-quoted by cmd, so the installer
+  path collapsed to a bare backslash. The updater now writes a tiny `.cmd`
+  next to the installer and launches it through `%~dp0`, which avoids the
+  nested quoting entirely. The downloaded installer is now actually started,
+  so the old process is replaced instead of leaving the user on the previous
+  version with the update dialog still appearing.
+- If an old Agent Switch window is still open after an update, fully quit it
+  before launching the newly installed build; the 0.4.1 check treats the
+  matching release as up to date.
+
 ## [0.4.0] - 2026-10-22
 
 ### Added

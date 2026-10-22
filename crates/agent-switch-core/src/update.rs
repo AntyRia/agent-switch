@@ -612,12 +612,24 @@ open "$APP"
 /// launches the NSIS installer, which replaces the installed files.
 #[cfg(windows)]
 pub fn spawn_windows_installer(exe: &Path) -> Result<()> {
-    let line = format!(
-        "timeout /t 3 /nobreak >nul & start \"\" \"{}\"",
-        exe.display()
+    let dir = exe
+        .parent()
+        .ok_or_else(|| Error::Other("installer path has no parent".into()))?;
+    let name = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| Error::Other("installer path has no file name".into()))?;
+    // A tiny script avoids the cmd /C "... start "" "..." re-quoting that
+    // made Windows try to launch a bare backslash on some temp paths.
+    // %~dp0 already ends with a backslash, so the quoted path is well formed.
+    let script = dir.join("agent-switch-update.cmd");
+    let text = format!(
+        "@echo off\r\nping -n 4 127.0.0.1 >nul\r\nstart \"\" \"%~dp0{name}\"\r\n"
     );
-    let _ = std::process::Command::new("cmd.exe")
-        .args(["/C", &line])
+    fs::write(&script, text)?;
+    let script_arg = script.to_string_lossy().into_owned();
+    std::process::Command::new("cmd.exe")
+        .args(["/C", script_arg.as_str()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
