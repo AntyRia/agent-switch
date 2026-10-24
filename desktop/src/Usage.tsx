@@ -93,11 +93,18 @@ const ZH = {
   serverHits: "命中 / 查询",
   serverKv: "KV 占用",
   serverRunning: "运行中",
+  genThroughput: "生成吞吐",
+  recentWindow: "近 12s",
+  avgSinceStart: "自启动平均",
+  sampling: "采样中",
+  prefillThroughput: "Prefill 吞吐",
+  ttft: "首 token 平均",
+  itl: "Token 间隔",
   serverDown: "连不上 /metrics",
   serverNoProfile: "没有可用的本地配置",
   serverRowHint: "切换到该配置",
   serverListHint: "点击任意本地配置，上方统计和下方会话会一起切换",
-  serverScopeNote: "服务端统计自 vLLM 启动，包含该配置上的所有会话与工具；客户端为本页所选范围最近 30 轮。",
+  serverScopeNote: "服务端统计自 vLLM 启动，包含该配置上的所有会话与工具；客户端为本页所选范围最近 30 轮。吞吐按最近一次采样间隔计算，首 token/间隔为自启动平均。",
   serverLocalOnly: "该配置不是本地 vLLM，不提供 /metrics；命中率以客户端 cache 字段为准",
   inputLabel: "未命中输入",
   cacheWriteLabel: "缓存写入",
@@ -174,11 +181,18 @@ const EN: Copy = {
   serverHits: "Hits / queries",
   serverKv: "KV usage",
   serverRunning: "Running",
+  genThroughput: "Generation",
+  recentWindow: "last 12s",
+  avgSinceStart: "since start",
+  sampling: "sampling",
+  prefillThroughput: "Prefill",
+  ttft: "Avg TTFT",
+  itl: "Avg ITL",
   serverDown: "Cannot reach /metrics",
   serverNoProfile: "No local profile available",
   serverRowHint: "Scope the page to this profile",
   serverListHint: "Pick a local profile to scope the stats and sessions below",
-  serverScopeNote: "Server counters run since vLLM started and include every session/tool on this profile; the client rate is the selected scope's last 30 turns.",
+  serverScopeNote: "Server counters run since vLLM started and include every session/tool on this profile; the client rate is the selected scope's last 30 turns. Throughput uses the latest sample interval; TTFT/ITL are averages since start.",
   serverLocalOnly: "This profile is not a local vLLM endpoint; no /metrics — use the client cache fields",
   inputLabel: "Uncached input",
   cacheWriteLabel: "Cache write",
@@ -202,6 +216,23 @@ function fmtTokens(n: number): string {
 function fmtPercent(v: number): string {
   if (!Number.isFinite(v)) return "0%";
   return (v * 100).toFixed(v >= 0.995 ? 0 : 1) + "%";
+}
+
+function fmtRate(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "—";
+  }
+  if (value >= 1000) return (value / 1000).toFixed(1) + "k";
+  if (value >= 100) return value.toFixed(0);
+  return value.toFixed(1);
+}
+
+function fmtMs(value?: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return "—";
+  }
+  if (value >= 1000) return (value / 1000).toFixed(2) + " s";
+  return value.toFixed(0) + " ms";
 }
 
 function hitTone(rate: number): "high" | "mid" | "low" {
@@ -502,6 +533,16 @@ function ServerCard({
             hit_rate: 0,
             kv_usage: 0,
             running: 0,
+            prompt_tokens: 0,
+            generation_tokens: 0,
+            requests: 0,
+            prompt_throughput: null,
+            generation_throughput: null,
+            ttft_ms: null,
+            itl_ms: null,
+            uptime_secs: null,
+            prompt_avg_throughput: null,
+            generation_avg_throughput: null,
           });
         }
       } finally {
@@ -558,7 +599,8 @@ function ServerCard({
           </div>
         </div>
       ) : (
-        <div className="usage-server-body">
+        <>
+          <div className="usage-server-body">
           <Ring
             value={stats.hit_rate}
             size={compact ? 96 : 122}
@@ -583,6 +625,51 @@ function ServerCard({
             </div>
           </div>
         </div>
+          <div className="usage-server-throughput">
+            <div>
+              <span>
+                {copy.genThroughput} · {copy.recentWindow}
+              </span>
+              <strong>
+                {stats.generation_throughput == null
+                  ? copy.sampling
+                  : fmtRate(stats.generation_throughput) + " "}
+                {stats.generation_throughput != null && <em>tok/s</em>}
+              </strong>
+              <small>
+                {copy.avgSinceStart}{" "}
+                {stats.generation_avg_throughput == null
+                  ? "—"
+                  : fmtRate(stats.generation_avg_throughput) + " tok/s"}
+              </small>
+            </div>
+            <div>
+              <span>
+                {copy.prefillThroughput} · {copy.recentWindow}
+              </span>
+              <strong>
+                {stats.prompt_throughput == null
+                  ? copy.sampling
+                  : fmtRate(stats.prompt_throughput) + " "}
+                {stats.prompt_throughput != null && <em>tok/s</em>}
+              </strong>
+              <small>
+                {copy.avgSinceStart}{" "}
+                {stats.prompt_avg_throughput == null
+                  ? "—"
+                  : fmtRate(stats.prompt_avg_throughput) + " tok/s"}
+              </small>
+            </div>
+            <div>
+              <span>{copy.ttft}</span>
+              <strong>{fmtMs(stats.ttft_ms)}</strong>
+            </div>
+            <div>
+              <span>{copy.itl}</span>
+              <strong>{fmtMs(stats.itl_ms)}</strong>
+            </div>
+          </div>
+        </>
       )}
       <p className="usage-server-scope-note">{copy.serverScopeNote}</p>
     </section>
@@ -652,7 +739,11 @@ function ServerPanel({
                   {s?.ok ? fmtPercent(s.hit_rate) : "—"}
                 </span>
                 <span className="usage-server-meta">
-                  {s?.ok ? fmtTokens(s.hits) + " / " + fmtTokens(s.queries) : copy.loading}
+                  {s?.ok
+                    ? s.generation_throughput == null
+                      ? copy.sampling
+                      : fmtRate(s.generation_throughput) + " tok/s"
+                    : copy.loading}
                 </span>
               </button>
             );

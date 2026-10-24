@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.9] - 2026-10-25
+
+### Added
+
+- The server card now shows average **generation throughput** and **prefill
+  throughput** in tokens/s, plus average time-to-first-token and inter-token
+  latency. The values come from vLLM's prompt/generation token counters and
+  TTFT/ITL histograms.
+- Throughput is computed over the interval between the last two `/metrics`
+  samples (about 12 s), so the first sample shows "采样中". TTFT/ITL are
+  averages since the server started.
+
 ## [0.4.8] - 2026-10-22
 
 ### Changed

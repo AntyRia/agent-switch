@@ -76,6 +76,23 @@ pub struct ServerCacheStats {
     pub hit_rate: f64,
     pub kv_usage: f64,
     pub running: f64,
+    /// Cumulative prefill/generation tokens since server start.
+    pub prompt_tokens: f64,
+    pub generation_tokens: f64,
+    /// Successfully finished requests since server start.
+    pub requests: f64,
+    /// Tokens/s over the interval between the last two successful samples.
+    /// None on the first sample, or after a counter reset/restart.
+    pub prompt_throughput: Option<f64>,
+    pub generation_throughput: Option<f64>,
+    /// Average time to first token / inter-token latency, ms, since start.
+    pub ttft_ms: Option<f64>,
+    pub itl_ms: Option<f64>,
+    /// Server uptime, seconds, from process_start_time_seconds.
+    pub uptime_secs: Option<f64>,
+    /// Lifetime averages, tokens/s since the server started.
+    pub prompt_avg_throughput: Option<f64>,
+    pub generation_avg_throughput: Option<f64>,
 }
 
 struct CacheEntry {
@@ -535,6 +552,50 @@ fn server_cache_store() -> &'static Mutex<HashMap<String, (Instant, ServerCacheS
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[derive(Clone, Copy)]
+struct TokenSample {
+    at: Instant,
+    prompt: f64,
+    generation: f64,
+}
+
+fn token_samples() -> &'static Mutex<HashMap<String, TokenSample>> {
+    static SAMPLES: OnceLock<Mutex<HashMap<String, TokenSample>>> = OnceLock::new();
+    SAMPLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Convert two cumulative token-counter samples into a recent tokens/s rate.
+/// The first call returns None; later calls use the elapsed time since the
+/// previous successful fetch. A counter reset also returns None.
+fn sample_throughput(
+    endpoint: &str,
+    prompt_tokens: f64,
+    generation_tokens: f64,
+) -> (Option<f64>, Option<f64>) {
+    let now = Instant::now();
+    let mut rates = (None, None);
+    if let Ok(mut samples) = token_samples().lock() {
+        if let Some(prev) = samples.get(endpoint) {
+            let secs = now.duration_since(prev.at).as_secs_f64();
+            if secs >= 1.0 && prompt_tokens >= prev.prompt && generation_tokens >= prev.generation {
+                rates = (
+                    Some((prompt_tokens - prev.prompt) / secs),
+                    Some((generation_tokens - prev.generation) / secs),
+                );
+            }
+        }
+        samples.insert(
+            endpoint.to_string(),
+            TokenSample {
+                at: now,
+                prompt: prompt_tokens,
+                generation: generation_tokens,
+            },
+        );
+    }
+    rates
+}
+
 /// Fetch \`<base>/metrics\` and extract vLLM's prefix-cache counters.
 /// Results are cached for 5 s per endpoint; failures cache for 5 s too so a
 /// dead endpoint does not slow the page down.
@@ -633,6 +694,14 @@ pub fn fetch_server_cache(base_url: &str, api_key: Option<&str>) -> ServerCacheS
             let mut queries = 0.0;
             let mut kv_usage = 0.0;
             let mut running = 0.0;
+            let mut prompt_tokens = 0.0;
+            let mut generation_tokens = 0.0;
+            let mut requests = 0.0;
+            let mut ttft_sum = 0.0;
+            let mut ttft_count = 0.0;
+            let mut itl_sum = 0.0;
+            let mut itl_count = 0.0;
+            let mut start_time = 0.0;
             for line in body.lines() {
                 if line.starts_with('#') {
                     continue;
@@ -645,10 +714,42 @@ pub fn fetch_server_cache(base_url: &str, api_key: Option<&str>) -> ServerCacheS
                     "vllm:prefix_cache_queries_total" => queries += value,
                     "vllm:kv_cache_usage_perc" => kv_usage = value,
                     "vllm:num_requests_running" => running = value,
+                    "vllm:prompt_tokens_total" => prompt_tokens += value,
+                    "vllm:generation_tokens_total" => generation_tokens += value,
+                    "vllm:request_success_total" => requests += value,
+                    "vllm:time_to_first_token_seconds_sum" => ttft_sum += value,
+                    "vllm:time_to_first_token_seconds_count" => ttft_count += value,
+                    "vllm:inter_token_latency_seconds_sum" => itl_sum += value,
+                    "vllm:inter_token_latency_seconds_count" => itl_count += value,
+                    "process_start_time_seconds" => start_time = value,
                     _ => {}
                 }
             }
             let hit_rate = if queries > 0.0 { hits / queries } else { 0.0 };
+            let (prompt_throughput, generation_throughput) =
+                sample_throughput(&endpoint, prompt_tokens, generation_tokens);
+            let ttft_ms = if ttft_count > 0.0 {
+                Some(ttft_sum / ttft_count * 1000.0)
+            } else {
+                None
+            };
+            let itl_ms = if itl_count > 0.0 {
+                Some(itl_sum / itl_count * 1000.0)
+            } else {
+                None
+            };
+            let uptime_secs = if start_time > 0.0 {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                let uptime = now - start_time;
+                if uptime > 1.0 { Some(uptime) } else { None }
+            } else {
+                None
+            };
+            let prompt_avg_throughput = uptime_secs.map(|u| prompt_tokens / u);
+            let generation_avg_throughput = uptime_secs.map(|u| generation_tokens / u);
             ServerCacheStats {
                 ok: true,
                 message: String::new(),
@@ -658,6 +759,16 @@ pub fn fetch_server_cache(base_url: &str, api_key: Option<&str>) -> ServerCacheS
                 hit_rate,
                 kv_usage,
                 running,
+                prompt_tokens,
+                generation_tokens,
+                requests,
+                prompt_throughput,
+                generation_throughput,
+                ttft_ms,
+                itl_ms,
+                uptime_secs,
+                prompt_avg_throughput,
+                generation_avg_throughput,
             }
         }
         Err(e) => ServerCacheStats {

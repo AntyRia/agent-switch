@@ -150,6 +150,19 @@ export interface ServerCacheStats {
   hit_rate: number;
   kv_usage: number;
   running: number;
+  prompt_tokens: number;
+  generation_tokens: number;
+  requests: number;
+  /** Tokens/s over the interval between the last two samples; null on the
+   * first sample or after a counter reset. */
+  prompt_throughput: number | null;
+  generation_throughput: number | null;
+  /** Average TTFT / inter-token latency, ms, since server start. */
+  ttft_ms: number | null;
+  itl_ms: number | null;
+  uptime_secs: number | null;
+  prompt_avg_throughput: number | null;
+  generation_avg_throughput: number | null;
 }
 
 /** Result of a full-history CSV export. */
