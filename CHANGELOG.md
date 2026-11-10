@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.10] - 2026-11-10
+
+### Fixed
+
+- **Codex profiles fail to launch on Windows** ("Error: app server did not
+  become ready … path must be shorter than SUN_LEN"): Codex v0.166.0's new
+  background app-server daemon binds an AF_UNIX socket inside `CODEX_HOME`,
+  and the previous home layout (`runtime/<36-char-profile-uuid>/.codex/...`)
+  pushed that socket path to 133+bytes — over Windows' 108-byte `SUN_LEN`
+  limit for every username, so the daemon never started and the TUI exited
+  with the error.
+
+### Changed
+
+- Per-profile homes moved to a shorter layout so the socket path fits
+  (100+bytes; fits usernames up to 7 chars on Windows, unaffected on
+  macOS): the root segment `runtime/` is now `rt/`, and per-profile
+  directories use a compact name — the profile id verbatim when it is
+  already short, otherwise an 8-hex-char token derived from the id (auto
+  UUIDs map to their first 8 hex digits).
+- Existing installs migrate automatically on next start: `runtime/` →
+  `rt/` and full-id dirs → their compact names. Session history stays
+  resumable; nothing is deleted.
+
 ## [0.4.9] - 2026-10-25
 
 ### Added

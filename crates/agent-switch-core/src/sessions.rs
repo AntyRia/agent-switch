@@ -52,7 +52,7 @@ const PREVIEW_CAP: usize = 120;
 /// threads costs more than it saves, so we parse serially.
 const PARALLEL_PARSE_MIN: usize = 8;
 
-/// All sessions across every `runtime/<profile-id>` home, newest first.
+/// All sessions across every per-profile home (`rt/<home>`), newest first.
 ///
 /// Each transcript's head is parsed independently and the final order is by
 /// mtime (order-independent), so for larger pools the reads run on a bounded
@@ -130,24 +130,37 @@ pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
 /// reading any transcript content. `list_sessions` maps these through
 /// `session_from_file`; `find_session` uses them to narrow to the one file
 /// whose name matches before paying for a full parse.
+///
+/// Since 0.4.10 the home dir is named with the profile's COMPACT token, not
+/// its id, so dir names are resolved back to ids via the profile list (a
+/// legacy full-id dir, or an unknown dir, falls back to the dir name).
 pub(crate) fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, String)>> {
     let mut out = Vec::new();
+    let _ = store.ensure_runtime_root();
     let root = store.runtime_dir();
     if !root.is_dir() {
         return Ok(out);
+    }
+    let mut id_by_dir_name: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if let Ok(profiles) = store.list() {
+        for p in profiles {
+            id_by_dir_name.insert(p.id.clone(), p.id.clone());
+            id_by_dir_name.insert(crate::runtime::compact_home_name(&p.id), p.id);
+        }
     }
     for entry in std::fs::read_dir(&root)?.flatten() {
         let home_root = entry.path();
         if !home_root.is_dir() {
             continue;
         }
-        let Some(profile_id) = home_root
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
-        else {
+        let Some(dir_name) = home_root.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
+        let profile_id = id_by_dir_name
+            .get(dir_name)
+            .cloned()
+            .unwrap_or_else(|| dir_name.to_string());
         for engine in [Engine::Claude, Engine::Codex] {
             let home = home_root.join(engine.home_dir_name());
             if !home.is_dir() {
@@ -310,7 +323,7 @@ fn resume_arguments_for(
 }
 
 /// Delete a session's transcript file(s) from the profile homes and drop
-/// its meta entries. Only files under `runtime/` whose name matches the
+/// its meta entries. Only files under `rt/` whose name matches the
 /// session id are ever removed; returns how many files were deleted.
 pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
     if session_is_open(store, session_id) {
@@ -318,6 +331,7 @@ pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
             "cannot delete a running, starting, or unverified session".into(),
         ));
     }
+    let _ = store.ensure_runtime_root();
     let root = store.runtime_dir();
     let mut removed = 0usize;
     if root.is_dir() {
@@ -384,6 +398,7 @@ pub fn clear_unpinned_sessions(store: &ProfileStore) -> Result<usize> {
     let activity = session_activities(store);
     let keep: std::collections::HashSet<&str> = meta.pinned.iter().map(|s| s.as_str()).collect();
 
+    let _ = store.ensure_runtime_root();
     let root = store.runtime_dir();
     let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut failed = 0usize;
@@ -829,6 +844,54 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn sessions_from_compact_home_report_the_full_profile_id() {
+        let root = temp_root();
+        let store = ProfileStore { root: root.clone() };
+        let id = "5c6479a1-b596-47fc-9525-12b0e6fd20b5";
+        let profile = crate::profile::Profile {
+            id: id.into(),
+            name: "UUID profile".into(),
+            description: String::new(),
+            provider: crate::profile::ProviderConfig {
+                provider_type: "openai-compatible".into(),
+                base_url: "http://127.0.0.1:8000/v1".into(),
+                api_key: Some("EMPTY".into()),
+                api_key_env: None,
+                auth_mode: None,
+            },
+            model: crate::profile::ModelConfig {
+                default: "m".into(),
+                effort: None,
+                context_window: None,
+                models: Vec::new(),
+            },
+            codex: crate::profile::CodexConfig {
+                provider_name: id.into(),
+            },
+            cli: String::new(),
+        };
+        store.save(&profile, None).unwrap();
+        // Transcript lives in the COMPACT-named home (the 0.4.10 layout).
+        seed_claude_session(
+            &store,
+            &crate::runtime::compact_home_name(id),
+            "sess-1",
+        );
+        // A legacy full-id dir (pre-migration leftovers) must resolve too.
+        seed_claude_session(&store, id, "sess-2");
+
+        let sessions = list_sessions(&store).unwrap();
+        assert_eq!(sessions.len(), 2);
+        for s in &sessions {
+            assert_eq!(s.profile_id, id, "dir name must map back to the id");
+        }
+        // The desktop's by-id enrichment keys off profile_id — it must be
+        // the real id, not the dir token.
+        assert!(find_session(&store, "sess-1").unwrap().profile_id == id);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

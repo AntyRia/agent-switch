@@ -35,7 +35,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Create the config root (profiles/ + runtime/); idempotent
+    /// Create the config root (profiles/ + rt/); idempotent
     Init,
     /// List all provider profiles
     List,
@@ -868,6 +868,7 @@ fn cmd_doctor(store: &ProfileStore) -> Result<()> {
     }
     println!();
     let profiles_dir = store.profiles_dir();
+    let _ = store.ensure_runtime_root(); // migrate a 0.4.9 `runtime/` root
     let runtime_dir = store.runtime_dir();
     if profiles_dir.is_dir() {
         println!("Profile Directory: ✓ {}", profiles_dir.display());

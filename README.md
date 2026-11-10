@@ -54,7 +54,7 @@ per-provider file:
 Profile (profiles/<id>.toml)
         |
         v
-Isolated persistent home (runtime/<profile-id>/.codex or .claude)
+Isolated persistent home (rt/<home>/.codex or .claude)
         |
         v
 Independent CODEX_HOME / CLAUDE_CONFIG_DIR
@@ -291,7 +291,7 @@ npm run tauri build            # installers → src-tauri/target/release/bundle/
 | Command | Description |
 | --- | --- |
 | `agent-switch` | No arguments: prints a quick-start guide and command reference. |
-| `agent-switch init` | Create the config root (`profiles/` + `runtime/`). Idempotent. |
+| `agent-switch init` | Create the config root (`profiles/` + `rt/`). Idempotent. |
 | `agent-switch list` | List all profiles (ID / NAME / CLI / MODEL). |
 | `agent-switch show <PROFILE>` | Show one profile; the API key is always masked. |
 | `agent-switch add` | Interactively create a new profile (empty answer = the bracketed default; pipe-friendly). |
@@ -372,7 +372,7 @@ agent-switch run relay-claude
 agent-switch run local-vllm
 ```
 
-All processes run concurrently — each has its own `runtime/<profile-id>/`
+All processes run concurrently — each has its own `rt/<home>/`
 home and its own key environment variable, so they cannot interfere with each
 other.
 
@@ -552,14 +552,22 @@ codex / claude) live in [`examples/`](examples/).
 
 ## How isolation works
 
-- Every profile owns a **persistent** isolated home `runtime/<profile-id>/`:
-  - **codex profiles**: `runtime/<profile-id>/.codex/` with a `config.toml`
-    that is regenerated from the profile on every launch (model, provider,
-    base URL — but **no API key**); the profile stays the single source of
-    routing truth.
-  - **claude profiles**: `runtime/<profile-id>/.claude/` (Claude gets
-    everything it needs from environment variables; the directory collects
-    session transcripts).
+- Every profile owns a **persistent** isolated home `rt/<home>/`, where
+  `<home>` is the profile id when it is already short, and an 8-hex-char
+  token derived from the id otherwise (the auto-generated 36-char UUIDs map
+  to their first 8 hex digits). The name is deliberately short: Codex's
+  background app-server daemon (≥ v0.166) binds an AF_UNIX socket inside
+  `CODEX_HOME`, and Windows only accepts socket paths < 108 bytes.
+  - **codex profiles**: `rt/<home>/.codex/` with a `config.toml` that is
+    regenerated from the profile on every launch (model, provider, base URL
+    — but **no API key**); the profile stays the single source of routing
+    truth.
+  - **claude profiles**: `rt/<home>/.claude/` (Claude gets everything it
+    needs from environment variables; the directory collects session
+    transcripts).
+- Upgrading from 0.4.9: existing homes are moved automatically on the next
+  start (`runtime/` → `rt/`, full-id dirs → their compact names); session
+  history stays resumable.
 - Because the home persists, **conversation history is per-profile and
   resumable**: Claude transcripts and Codex rollouts live inside it, and the
   session pool (`agent-switch sessions` / the GUI's Sessions page) lists them
@@ -584,12 +592,12 @@ codex / claude) live in [`examples/`](examples/).
   saving on even when the GUI itself runs inside a Claude Code session, and
   keeps routing fully independent of the parent shell.
 - **First-launch onboarding is pre-seeded for claude homes.** A fresh
-  `runtime/<profile-id>/.claude/` is seeded with `settings.json` (`theme`,
+  `rt/<home>/.claude/` is seeded with `settings.json` (`theme`,
   only when absent) and `.claude.json` (`hasCompletedOnboarding`, plus a
   per-workspace `hasTrustDialogAccepted` entry, merged without clobbering
   Claude's own state) so the first launch skips the theme picker and the
   "trust this folder" dialog.
-- Legacy ephemeral `runtime/<uuid>` directories left over from older versions
+- Legacy ephemeral `rt/<uuid>` directories left over from older versions
   are pruned automatically: anything older than 7 days is deleted and only
   the newest 20 are kept (`agent-switch cleanup` does the same on demand).
   Per-profile homes are never pruned.

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
 use crate::profile::Profile;
@@ -37,11 +37,11 @@ impl ProfileStore {
         }
     }
 
-    /// Create the directory layout (idempotent): profiles/ and runtime/.
+    /// Create the directory layout (idempotent): profiles/ and rt/.
     /// (settings.toml is created on demand by the settings module.)
     pub fn init(&self) -> Result<()> {
         fs::create_dir_all(self.profiles_dir())?;
-        fs::create_dir_all(self.runtime_dir())?;
+        self.ensure_runtime_root()?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -55,8 +55,72 @@ impl ProfileStore {
         self.root.join("profiles")
     }
 
+    /// Root of the per-profile isolated homes.
+    ///
+    /// Renamed `runtime` → `rt` in 0.4.10: Codex's background app-server
+    /// daemon (≥ v0.166) binds an AF_UNIX socket inside `CODEX_HOME`, and
+    /// Windows only accepts socket paths < 108 bytes (`SUN_LEN`). The 0.4.9
+    /// layout (`runtime/<36-char-uuid>/.codex/...`) pushed the socket path
+    /// past that limit, so the daemon failed to start. Every byte saved in
+    /// the root widens the budget — see `runtime::compact_home_name`.
     pub fn runtime_dir(&self) -> PathBuf {
-        self.root.join("runtime")
+        self.root.join("rt")
+    }
+
+    /// Ensure `rt/` exists; on first use, migrate a 0.4.9 install's
+    /// `runtime/` directory into `rt/` (entries are MOVED, never deleted).
+    /// Idempotent and cheap once the legacy dir is gone.
+    pub fn ensure_runtime_root(&self) -> Result<()> {
+        let rt = self.runtime_dir();
+        fs::create_dir_all(&rt)?;
+        let legacy = self.root.join("runtime");
+        if legacy.is_dir() {
+            for entry in fs::read_dir(&legacy)? {
+                let entry = entry?;
+                let from = entry.path();
+                let to = rt.join(entry.file_name());
+                if !to.exists() {
+                    fs::rename(&from, &to)?;
+                } else if from.is_dir() && to.is_dir() {
+                    Self::merge_dir(&from, &to)?;
+                }
+            }
+            if fs::read_dir(&legacy)?.next().is_none() {
+                fs::remove_dir(&legacy)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Move `from`'s children into `into`. Children whose name already
+    /// exists in `into` are merged recursively (both dirs) or renamed to
+    /// `<name>.legacy` (files), so a half-migrated layout never loses data.
+    /// `from` is removed when it becomes empty.
+    pub(crate) fn merge_dir(from: &Path, into: &Path) -> Result<()> {
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let src = entry.path();
+            let name = entry.file_name();
+            let dst = into.join(&name);
+            if !dst.exists() {
+                fs::rename(&src, &dst)?;
+            } else if src.is_dir() && dst.is_dir() {
+                Self::merge_dir(&src, &dst)?;
+            } else {
+                let mut i = 1u32;
+                let mut renamed =
+                    into.join(format!("{}.legacy{}", name.to_string_lossy(), i));
+                while renamed.exists() {
+                    i += 1;
+                    renamed = into.join(format!("{}.legacy{}", name.to_string_lossy(), i));
+                }
+                fs::rename(&src, renamed)?;
+            }
+        }
+        if fs::read_dir(from)?.next().is_none() {
+            fs::remove_dir(from)?;
+        }
+        Ok(())
     }
 
     pub fn path_for(&self, id: &str) -> PathBuf {
@@ -240,6 +304,46 @@ mod tests {
         store.save(&p, Some("old-id")).unwrap();
         assert!(!store.path_for("old-id").exists());
         assert!(store.path_for("new-id").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_runtime_root_migrates_legacy_runtime_dir() {
+        let (store, dir) = temp_store();
+        // 0.4.9 layout: homes under root/runtime/.
+        let legacy = dir.join("runtime").join("abc").join(".codex");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("config.toml"), "data").unwrap();
+
+        store.ensure_runtime_root().unwrap();
+        assert!(store.runtime_dir().join("abc/.codex/config.toml").exists());
+        assert!(!dir.join("runtime").exists(), "legacy dir must be removed");
+        // Idempotent: a second call must be a no-op.
+        store.ensure_runtime_root().unwrap();
+        assert!(store.runtime_dir().join("abc/.codex/config.toml").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_runtime_root_merges_when_both_sides_exist() {
+        let (store, dir) = temp_store();
+        let legacy = dir.join("runtime").join("abc");
+        let fresh = store.runtime_dir().join("abc");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::create_dir_all(&fresh).unwrap();
+        fs::write(legacy.join("old-file"), "old").unwrap();
+        fs::write(fresh.join("new-file"), "new").unwrap();
+        // Same name on both sides: kept (never clobbered), source renamed.
+        fs::write(legacy.join("same"), "old").unwrap();
+        fs::write(fresh.join("same"), "new").unwrap();
+
+        store.ensure_runtime_root().unwrap();
+        let merged = store.runtime_dir().join("abc");
+        assert!(merged.join("old-file").exists());
+        assert!(merged.join("new-file").exists());
+        assert_eq!(fs::read_to_string(merged.join("same")).unwrap(), "new");
+        assert!(merged.join("same.legacy1").exists());
+        assert!(!dir.join("runtime").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

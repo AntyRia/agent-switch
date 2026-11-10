@@ -173,6 +173,7 @@ fn inspect(store: &ProfileStore, snapshot: Snapshot) -> SessionActivities {
         }
     }
     // Read only session ownership metadata. Never read job providerEnv or keys.
+    let _ = store.ensure_runtime_root(); // migrate a 0.4.9 `runtime/` root once
     if let Ok(profiles) = std::fs::read_dir(store.runtime_dir()) {
         for profile in profiles.flatten() {
             let Ok(records) = std::fs::read_dir(profile.path().join(".claude/sessions")) else {

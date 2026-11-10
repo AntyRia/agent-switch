@@ -14,13 +14,74 @@ use crate::profile_store::ProfileStore;
 /// the session pool. It stays fully separate from the user's global
 /// `~/.codex` / `~/.claude` — the whole point of the product.
 pub struct Runtime {
-    /// `<root>/runtime/<profile-id>`
+    /// `<root>/rt/<compact home name>` (see `compact_home_name`).
     pub dir: PathBuf,
     /// Engine the runtime was created for.
     pub engine: Engine,
     /// `<dir>/.codex` (Codex) or `<dir>/.claude` (Claude) — the value for
     /// the CODEX_HOME / CLAUDE_CONFIG_DIR env var.
     pub home: PathBuf,
+}
+
+/// On-disk name of a profile's persistent home dir: `<root>/rt/<name>`.
+///
+/// Already-short ids (≤ 8 chars) are used verbatim; longer ids — the
+/// auto-generated 36-char UUIDs — map to an 8-hex-char token: the first 8
+/// hex digits of the id for UUIDs, else of sha256(id).
+///
+/// The bound is load-bearing: Codex's background app-server daemon (≥ v0.166)
+/// binds an AF_UNIX socket at `<CODEX_HOME>/app-server-control/
+/// app-server-control.sock`, and Windows only accepts socket paths < 108
+/// bytes (`SUN_LEN`). With the 0.4.9 layout the socket path was
+/// `C:\Users\<u>\AppData\Roaming\agent-switch\runtime\<36-char-uuid>/.codex/
+/// app-server-control/app-server-control.sock` = 133+u bytes — already over
+/// the limit for EVERY username, so the daemon died with "path must be
+/// shorter than SUN_LEN" (138 bytes on a 5-char username). The 0.4.10
+/// layout is 100+u bytes: it fits for usernames up to 7 chars, and macOS
+/// (limit 104) is unaffected at 83+u bytes.
+pub fn compact_home_name(id: &str) -> String {
+    if id.len() <= 8 {
+        return id.to_string();
+    }
+    if let Ok(u) = uuid::Uuid::parse_str(id) {
+        return u.as_simple().to_string()[..8].to_string();
+    }
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(id.as_bytes());
+    let mut out = String::with_capacity(8);
+    for b in digest.iter().take(4) {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// One-time migration of a 0.4.9 per-profile dir: the home used to live at
+/// `<root>/runtime/<full-id>` (root segment renamed by
+/// `ProfileStore::ensure_runtime_root`). If the legacy dir exists, move its
+/// content into the compact dir — session history must survive the rename,
+/// `codex resume` / `claude --resume` look inside CODEX_HOME.
+fn migrate_legacy_profile_dir(base: &Path, id: &str) {
+    let name = compact_home_name(id);
+    if name == id {
+        return;
+    }
+    let legacy = base.join(id);
+    if !legacy.is_dir() {
+        return;
+    }
+    let compact = base.join(&name);
+    let ok = if compact.is_dir() {
+        crate::profile_store::ProfileStore::merge_dir(&legacy, &compact).is_ok()
+    } else {
+        fs::rename(&legacy, &compact).is_ok()
+    };
+    if !ok {
+        crate::logging::warn(&format!(
+            "could not migrate legacy runtime dir {} to {}",
+            legacy.display(),
+            compact.display()
+        ));
+    }
 }
 
 /// Get (creating if needed) the profile's persistent isolated home. Codex's
@@ -36,9 +97,10 @@ pub fn create_runtime(
     workspace: &Path,
 ) -> Result<Runtime> {
     let engine = profile.engine();
+    store.ensure_runtime_root()?;
     let runtime_dir = store.runtime_dir();
-    fs::create_dir_all(&runtime_dir)?;
-    let dir = runtime_dir.join(&profile.id);
+    migrate_legacy_profile_dir(&runtime_dir, &profile.id);
+    let dir = runtime_dir.join(compact_home_name(&profile.id));
     let home = dir.join(engine.home_dir_name());
     fs::create_dir_all(&home)?;
     if matches!(engine, Engine::Codex) {
@@ -133,15 +195,22 @@ fn project_path_key(ws: &Path) -> String {
 
 /// Delete runtime dirs older than 7 days, then keep only the newest 20.
 /// Returns the deleted paths. Never touches `profiles/`, and never prunes
-/// a dir named after an existing profile (those are the persistent
-/// per-profile homes — pruning them would destroy conversation history).
-/// Only legacy ephemeral `runtime/<uuid>` dirs from older versions are
-/// pruned.
+/// a dir named after an existing profile — in full (≤ 0.4.9) or compact
+/// form (those are the persistent per-profile homes — pruning them would
+/// destroy conversation history). Only legacy ephemeral `rt/<uuid>` dirs
+/// from older versions are pruned.
 pub fn cleanup(store: &ProfileStore) -> Vec<PathBuf> {
     let root = store.runtime_dir();
-    let profile_ids: std::collections::HashSet<String> = store
+    let home_names: std::collections::HashSet<String> = store
         .list()
-        .map(|ps| ps.into_iter().map(|p| p.id).collect())
+        .map(|ps| {
+            ps.into_iter()
+                .flat_map(|p| {
+                    let compact = compact_home_name(&p.id);
+                    [p.id, compact]
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let mut deleted = Vec::new();
     let mut dirs: Vec<(PathBuf, SystemTime)> = Vec::new();
@@ -152,7 +221,7 @@ pub fn cleanup(store: &ProfileStore) -> Vec<PathBuf> {
                 let is_profile_home = path
                     .file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| profile_ids.contains(n));
+                    .is_some_and(|n| home_names.contains(n));
                 if is_profile_home {
                     continue;
                 }
@@ -465,6 +534,108 @@ mod tests {
         assert!(rt.home.is_dir());
         // Claude needs no config file; the key must not land on disk.
         assert!(!rt.home.join("config.toml").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compact_home_name_is_bounded_and_stable() {
+        // Short ids stay verbatim (no migration needed for them).
+        assert_eq!(compact_home_name("t"), "t");
+        assert_eq!(compact_home_name("abcdefgh"), "abcdefgh");
+        // UUIDs: first 8 hex digits, dashes stripped.
+        assert_eq!(
+            compact_home_name("5c6479a1-b596-47fc-9525-12b0e6fd20b5"),
+            "5c6479a1"
+        );
+        assert_eq!(
+            compact_home_name("ABCD1234-EF00-4000-8000-000000000000"),
+            "abcd1234"
+        );
+        // Other long ids: 8 hex of sha256 — stable, distinct, hex-only.
+        let a = compact_home_name("a-very-long-profile-id-that-is-not-a-uuid");
+        let b = compact_home_name("a-very-long-profile-id-that-is-not-a-uuid");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 8);
+        assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(
+            a,
+            compact_home_name("a-very-long-profile-id-that-is-not-a-uuid-x")
+        );
+    }
+
+    fn profile_with_id(id: &str) -> Profile {
+        Profile {
+            id: id.into(),
+            name: format!("P {id}"),
+            description: String::new(),
+            provider: crate::profile::ProviderConfig {
+                provider_type: "openai-compatible".into(),
+                base_url: "http://127.0.0.1:8000/v1".into(),
+                api_key: Some("EMPTY".into()),
+                api_key_env: None,
+                auth_mode: None,
+            },
+            model: crate::profile::ModelConfig {
+                default: "m".into(),
+                effort: None,
+                context_window: None,
+                models: Vec::new(),
+            },
+            codex: crate::profile::CodexConfig {
+                provider_name: id.into(),
+            },
+            cli: String::new(),
+        }
+    }
+
+    #[test]
+    fn create_runtime_uses_compact_dir_and_migrates_legacy_full_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-rt-migrate-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let id = "5c6479a1-b596-47fc-9525-12b0e6fd20b5";
+        // 0.4.9 layout: the home lived at root/runtime/<full-uuid>/.codex.
+        let legacy_home = store.root.join("runtime").join(id).join(".codex");
+        let day = legacy_home.join("sessions/2026/09/10");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(day.join("rollout-old.jsonl"), "data").unwrap();
+        fs::write(legacy_home.join("config.toml"), "old config").unwrap();
+
+        let rt = create_runtime(&store, &profile_with_id(id), std::path::Path::new(".")).unwrap();
+        // The home moved to rt/<first-8-hex>; the socket-relevant tail is
+        // what made the name budget necessary.
+        assert_eq!(rt.dir.file_name().unwrap().to_str().unwrap(), "5c6479a1");
+        assert!(rt.dir.starts_with(store.runtime_dir()));
+        // History survived the rename: resume still finds the rollout.
+        assert!(rt.home.join("sessions/2026/09/10/rollout-old.jsonl").exists());
+        assert!(!store.root.join("runtime").exists(), "legacy root migrated");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_never_prunes_compact_profile_homes() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-clean-compact-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let id = "5c6479a1-b596-47fc-9525-12b0e6fd20b5";
+        store.save(&profile_with_id(id), None).unwrap();
+        let home = store.runtime_dir().join(compact_home_name(id));
+        fs::create_dir_all(&home).unwrap();
+        let f = open_dir_for_time(&home).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(8 * 24 * 3600))
+            .unwrap();
+
+        let deleted = cleanup(&store);
+        assert!(home.exists(), "compact profile home was pruned");
+        assert!(!deleted
+            .iter()
+            .any(|p| p == &home));
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -600,9 +600,9 @@ pub async fn login_profile(id: String) -> Result<LaunchOut, String> {
     })
 }
 
-/// The conversation pool: every session found in the per-profile
-/// `runtime/<profile-id>` homes, newest first, enriched with the owning
-/// profile's name and provider type (chip data for the UI).
+/// The conversation pool: every session found in the per-profile `rt/`
+/// homes, newest first, enriched with the owning profile's name and
+/// provider type (chip data for the UI).
 #[tauri::command]
 pub async fn list_sessions() -> Result<Vec<SessionView>, String> {
     let store = ProfileStore::new();
@@ -712,7 +712,7 @@ pub async fn set_session_title(session_id: String, title: String) -> Result<(), 
 }
 
 /// Delete a session: removes its transcript file(s) from the profile home
-/// and its pin/title meta. Nothing outside `runtime/` is ever touched.
+/// and its pin/title meta. Nothing outside `rt/` is ever touched.
 #[tauri::command]
 pub async fn delete_session(session_id: String) -> Result<(), String> {
     let store = ProfileStore::new();

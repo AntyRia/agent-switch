@@ -36,7 +36,7 @@ impl Engine {
         }
     }
 
-    /// Directory name of the isolated home under the runtime dir.
+    /// Directory name of the isolated home under `rt/<home>/`.
     pub fn home_dir_name(&self) -> &'static str {
         match self {
             Engine::Codex => ".codex",

@@ -49,7 +49,7 @@ Agent Switch 把"供应商"从全局配置中拆出来，落到每个供应商�
 Profile (profiles/<id>.toml)
         |
         v
-隔离持久 home (runtime/<profile-id>/.codex 或 .claude)
+隔离持久 home (rt/<home>/.codex 或 .claude)
         |
         v
 独立的 CODEX_HOME / CLAUDE_CONFIG_DIR
@@ -263,7 +263,7 @@ npm run tauri build            # 安装包 → src-tauri/target/release/bundle/
 | 命令 | 说明 |
 | --- | --- |
 | `agent-switch` | 不带参数：打印快速上手指南与命令一览。 |
-| `agent-switch init` | 初始化配置根目录（`profiles/` + `runtime/`）。可重复执行。 |
+| `agent-switch init` | 初始化配置根目录（`profiles/` + `rt/`）。可重复执行。 |
 | `agent-switch list` | 列出全部 profile（ID / 名称 / CLI / 默认模型）。 |
 | `agent-switch show <PROFILE>` | 查看单个 profile；API Key 永远打码。 |
 | `agent-switch add` | 交互式新建 profile（直接回车 = 使用括号内默认值；支持管道输入）。 |
@@ -342,7 +342,7 @@ agent-switch run relay-claude
 agent-switch run local-vllm
 ```
 
-所有进程并行运行——各自拥有独立的 `runtime/<profile-id>/` 环境与独立的
+所有进程并行运行——各自拥有独立的 `rt/<home>/` 环境与独立的
 Key 环境变量，互不干扰。
 
 ## 界面导览
@@ -506,12 +506,18 @@ claude 的官方配置：`type = "official"`、
 
 ## 隔离原理
 
-- 每个 profile 都拥有一份**持久的**隔离 home `runtime/<profile-id>/`：
-  - **codex profile**：`runtime/<profile-id>/.codex/`，其中的
-    `config.toml` 每次启动都从 profile 重新生成（模型、供应商、base
-    URL——**不含 API Key**）；profile 始终是路由的唯一事实来源。
-  - **claude profile**：`runtime/<profile-id>/.claude/`（Claude 所需
-    配置全部来自环境变量；该目录用于存放会话记录）。
+- 每个 profile 都拥有一份**持久的**隔离 home `rt/<home>/`。`<home>` 为
+  profile id（id 本身很短时直接使用）或从 id 派生的 8 位十六进制短名
+  （自动生成的 36 位 UUID 取其前 8 位十六进制）。短名是刻意设计的：
+  Codex 的后台 app-server 守护进程（≥ v0.166）会在 `CODEX_HOME` 内绑定
+  AF_UNIX socket，而 Windows 只接受 < 108 字节的 socket 路径。
+  - **codex profile**：`rt/<home>/.codex/`，其中的 `config.toml` 每次
+    启动都从 profile 重新生成（模型、供应商、base URL——**不含 API
+    Key**）；profile 始终是路由的唯一事实来源。
+  - **claude profile**：`rt/<home>/.claude/`（Claude 所需配置全部来自
+    环境变量；该目录用于存放会话记录）。
+- 从 0.4.9 升级时，已有 home 会在下次启动时自动迁移（`runtime/` →
+  `rt/`，完整 id 目录 → 短名目录），会话历史保持可恢复。
 - 因为 home 是持久的，**会话历史按 profile 保存、可恢复**：Claude 会话
   记录与 Codex rollout 都存放在其中，会话池（`agent-switch sessions` /
   GUI 的会话页）列出它们并在同一隔离环境中恢复。
@@ -531,12 +537,12 @@ claude 的官方配置：`type = "official"`、
   以及无关的 `ANTHROPIC_*` / `OPENAI_*` 供应商变量都会被清除，只应用
   profile 自己的变量。这既保证了 GUI 本身运行在 Claude Code 会话里时
   会话记录照常保存，也让路由与父 shell 完全解耦。
-- **claude home 预置首次启动引导。** 全新的
-  `runtime/<profile-id>/.claude/` 会预置 `settings.json`（仅在不存在时
+- **claude home 预置首次启动引导。** 全新的 `rt/<home>/.claude/` 会预置
+  `settings.json`（仅在不存在时
   写入 `theme`）和 `.claude.json`（`hasCompletedOnboarding`，以及按
   工作区合并的 `hasTrustDialogAccepted`，不覆盖 Claude 自身状态），
   首次启动即可跳过主题选择与「信任此文件夹」对话框。
-- 旧版本遗留的临时 `runtime/<uuid>` 目录会被自动清理：7 天以前的直接
+- 旧版本遗留的临时 `rt/<uuid>` 目录会被自动清理：7 天以前的直接
   删除，且最多保留最近 20 个（`agent-switch cleanup` 可随时手动执行
   同样逻辑）。按 profile 命名的 home 永不清理。
 
