@@ -8,6 +8,7 @@ pub mod codex;
 pub mod engine;
 pub mod error;
 pub mod health;
+pub mod http;
 pub mod launcher;
 pub mod logging;
 pub mod models;

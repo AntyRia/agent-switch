@@ -100,19 +100,26 @@ pub fn test_anthropic(
         "messages": [{ "role": "user", "content": "ping" }],
     })
     .to_string();
-    let mut request = ureq::post(&url)
-        .set("content-type", "application/json")
-        .set("anthropic-version", "2023-06-01")
-        .timeout(std::time::Duration::from_secs(10));
-    match auth_mode {
-        Some(m) if m.trim().eq_ignore_ascii_case("api_key") => {
-            request = request.set("x-api-key", api_key)
+    // Same route as the launched CLI (see crate::http::proxy_for); the 1-
+    // token request retries once on a transport-level failure.
+    let (agent, proxy) = crate::http::client_for(&url);
+    let attempt = || {
+        let mut request = agent
+            .post(&url)
+            .set("content-type", "application/json")
+            .set("anthropic-version", "2023-06-01")
+            .timeout(crate::http::PROBE_TIMEOUT);
+        match auth_mode {
+            Some(m) if m.trim().eq_ignore_ascii_case("api_key") => {
+                request = request.set("x-api-key", api_key)
+            }
+            _ => request = request.set("Authorization", &format!("Bearer {api_key}")),
         }
-        _ => request = request.set("Authorization", &format!("Bearer {api_key}")),
-    }
-    match request.send_string(&body) {
+        request.send_string(&body)
+    };
+    match crate::http::with_retry(attempt) {
         Ok(response) => {
-            let status = response.status() as u16;
+            let status = response.status();
             let ok = (200..300).contains(&status);
             Ok(TestResult {
                 ok,
@@ -127,7 +134,6 @@ pub fn test_anthropic(
             })
         }
         Err(ureq::Error::Status(status, response)) => {
-            let status = status as u16;
             let body = response.into_string().unwrap_or_default();
             Ok(TestResult {
                 ok: false,
@@ -140,21 +146,27 @@ pub fn test_anthropic(
             ok: false,
             status: 0,
             model_count: None,
-            message: format!("unreachable: {e}"),
+            message: format!("unreachable: {e}{}", crate::http::proxy_note(&proxy)),
         }),
     }
 }
 
-/// GET `<base_url>/models` with the given bearer key (10s timeout).
+/// GET `<base_url>/models` with the given bearer key (20 s timeout, one
+/// retry on a transport-level failure, through the same proxy as the
+/// launched CLI — see [`crate::http::proxy_for`]).
 pub fn test_connection(base_url: &str, api_key: &str) -> Result<TestResult> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    match ureq::get(&url)
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .timeout(std::time::Duration::from_secs(10))
-        .call()
-    {
+    let (agent, proxy) = crate::http::client_for(&url);
+    let attempt = || {
+        agent
+            .get(&url)
+            .set("Authorization", &format!("Bearer {api_key}"))
+            .timeout(crate::http::PROBE_TIMEOUT)
+            .call()
+    };
+    match crate::http::with_retry(attempt) {
         Ok(response) => {
-            let status = response.status() as u16;
+            let status = response.status();
             let body = response.into_string().unwrap_or_default();
             let model_count = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
@@ -172,7 +184,6 @@ pub fn test_connection(base_url: &str, api_key: &str) -> Result<TestResult> {
             })
         }
         Err(ureq::Error::Status(status, response)) => {
-            let status = status as u16;
             let body = response.into_string().unwrap_or_default();
             Ok(TestResult {
                 ok: false,
@@ -185,7 +196,7 @@ pub fn test_connection(base_url: &str, api_key: &str) -> Result<TestResult> {
             ok: false,
             status: 0,
             model_count: None,
-            message: format!("unreachable: {e}"),
+            message: format!("unreachable: {e}{}", crate::http::proxy_note(&proxy)),
         }),
     }
 }

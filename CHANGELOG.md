@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.11] - 2026-11-11
+
+### Fixed
+
+- **Model list fetch and connection test ignored the Settings proxy** (e.g.
+  `unreachable … (os error 10060)` for a relay behind Cloudflare while the
+  launched CLI reached the very same relay fine through the proxy): the app's
+  own HTTP requests — the model-list fetch, the connection test and the
+  release check/download — now resolve a proxy the same way the launched CLIs
+  get one: the Settings proxy first (the value injected into every launched
+  CLI), then `HTTPS_PROXY`/`ALL_PROXY`/`HTTP_PROXY`, then the Windows
+  "System Proxy" (Clash & co). Loopback hosts (`localhost`, `127.x`, `::1`)
+  and `NO_PROXY` entries always stay direct, so self-hosted vLLM/SGLang
+  profiles are never tunneled through the proxy.
+- Probes now retry once (after a short pause) on a transport-level failure
+  and use a 20 s timeout (was 5 s for the model list, 10 s for the
+  connection test), so a flaky-but-reachable relay is no longer reported as
+  unreachable.
+- Probe error messages now say which route was attempted ("via proxy
+  http://…" vs "direct connection, no proxy") instead of the bare error.
+
+### Changed
+
+- The Settings proxy hint now notes that the connection test, the model-list
+  fetch and the update download route through the proxy too.
+
 ## [0.4.10] - 2026-11-10
 
 ### Fixed

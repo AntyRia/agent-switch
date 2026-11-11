@@ -138,6 +138,7 @@ mod tests {
 
     #[test]
     fn settings_roundtrip_and_corrupt_file_falls_back() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!(
             "as-settings-{}-{}",
             std::process::id(),
@@ -160,3 +161,10 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 }
+
+/// Lock for tests that mutate the process-wide environment
+/// (AGENT_SWITCH_HOME): assertions about the config root must never
+/// observe another test's root. Shared by the settings and http test
+/// modules.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

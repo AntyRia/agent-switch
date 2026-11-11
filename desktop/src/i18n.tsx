@@ -198,7 +198,7 @@ const EN = {
   fProxyPort: "Proxy port",
   proxyPh: "7897",
   proxyHint:
-    "When set, every launched Codex / Claude routes all traffic through this HTTP proxy (no direct connections). localhost and 127.0.0.1 always bypass it, so self-hosted vLLM / SGLang still work.",
+    "When set, every launched Codex / Claude routes all traffic through this HTTP proxy (no direct connections) — the connection test, the model-list fetch and the update download do the same. localhost and 127.0.0.1 always bypass it, so self-hosted vLLM / SGLang still work.",
   proxyPortInvalid: "Proxy port must be a number between 1 and 65535.",
   settingsTerminalTitle: "Terminal",
   terminalAuto: "Auto-detect (recommended)",
@@ -438,7 +438,7 @@ const ZH: Record<TKey, string> = {
   fProxyPort: "代理端口",
   proxyPh: "7897",
   proxyHint:
-    "设置后，启动的 Codex / Claude 全部流量走该 HTTP 代理（无法直连）。localhost 与 127.0.0.1 始终豁免，自部署的 vLLM / SGLang 不受影响。",
+    "设置后，启动的 Codex / Claude 全部流量走该 HTTP 代理（无法直连）；连接测试、获取模型列表与更新下载同样走该代理。localhost 与 127.0.0.1 始终豁免，自部署的 vLLM / SGLang 不受影响。",
   proxyPortInvalid: "代理端口必须是 1–65535 之间的数字。",
   settingsTerminalTitle: "终端",
   terminalAuto: "自动检测（推荐）",

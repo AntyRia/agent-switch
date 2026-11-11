@@ -36,6 +36,12 @@ fn candidate_urls(engine: Engine, base_url: &str) -> Vec<String> {
 
 /// Fetch the model list. The first candidate returning 2xx wins; 401/403
 /// fails fast (the key is wrong, the second URL would fail too).
+///
+/// The request goes through the same proxy the launched CLIs use (app
+/// Settings, then `HTTPS_PROXY`, then the Windows system proxy — see
+/// [`crate::http::proxy_for`]), with a 20 s timeout and one retry on a
+/// transport-level failure, so a flaky direct connection does not report
+/// a live relay as unreachable.
 pub fn fetch_models(
     engine: Engine,
     base_url: &str,
@@ -61,15 +67,23 @@ pub fn fetch_models(
 
     let mut last_status: Option<u16> = None;
     for url in candidate_urls(engine, base) {
-        let mut request = ureq::get(&url)
-            .set("accept", "application/json")
-            .timeout(std::time::Duration::from_secs(5));
-        if use_api_key_header {
-            request = request.set("x-api-key", api_key);
-        } else {
-            request = request.set("Authorization", &format!("Bearer {api_key}"));
-        }
-        match request.call() {
+        // Same route as the launched CLI: app Settings proxy, then
+        // HTTPS_PROXY, then the Windows system proxy (loopback and
+        // NO_PROXY hosts stay direct).
+        let (agent, proxy) = crate::http::client_for(&url);
+        let attempt = || {
+            let mut request = agent
+                .get(&url)
+                .set("accept", "application/json")
+                .timeout(crate::http::PROBE_TIMEOUT);
+            if use_api_key_header {
+                request = request.set("x-api-key", api_key);
+            } else {
+                request = request.set("Authorization", &format!("Bearer {api_key}"));
+            }
+            request.call()
+        };
+        match crate::http::with_retry(attempt) {
             Ok(response) => {
                 let status = response.status();
                 if (200..300).contains(&status) {
@@ -91,7 +105,7 @@ pub fn fetch_models(
                         max_model_len: None,
                     });
                 }
-                last_status = Some(status as u16);
+                last_status = Some(status);
             }
             Err(ureq::Error::Status(status, _)) => {
                 if status == 401 || status == 403 {
@@ -102,14 +116,15 @@ pub fn fetch_models(
                         max_model_len: None,
                     });
                 }
-                last_status = Some(status as u16);
+                last_status = Some(status);
             }
-            // Connection-level failure: both candidates share the host, so
-            // there is no point trying the other URL.
+            // Connection-level failure (after the one retry): both
+            // candidates share the host, so there is no point trying the
+            // other URL.
             Err(e) => {
                 return Ok(ModelList {
                     ok: false,
-                    message: format!("unreachable: {e}"),
+                    message: format!("unreachable: {e}{}", crate::http::proxy_note(&proxy)),
                     models: vec![],
                     max_model_len: None,
                 });
