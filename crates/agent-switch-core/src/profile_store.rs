@@ -93,12 +93,13 @@ impl ProfileStore {
             for (name, from) in pending {
                 let to = rt.join(&name);
                 if !to.exists() {
-                    if let Err(e) = fs::rename(&from, &to) {
-                        crate::logging::warn(&format!(
+                    match fs::rename(&from, &to) {
+                        Ok(()) => crate::runtime::repair_codex_daemon_link(&to),
+                        Err(e) => crate::logging::warn(&format!(
                             "could not migrate {} to {} (in use? it will migrate on a later start): {e}",
                             from.display(),
                             to.display()
-                        ));
+                        )),
                     }
                 } else if from.is_dir() && to.is_dir() {
                     if let Err(e) = Self::merge_dir(&from, &to) {

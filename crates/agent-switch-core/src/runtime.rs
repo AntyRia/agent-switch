@@ -81,6 +81,187 @@ fn migrate_legacy_profile_dir(base: &Path, id: &str) {
             legacy.display(),
             compact.display()
         ));
+    } else {
+        // The move rewrites the daemon's absolute `current` link — point it
+        // back at the release the home actually holds.
+        repair_codex_daemon_link(&compact);
+    }
+}
+
+/// Repair the Codex daemon's `current` link after a profile home has moved.
+///
+/// Codex (≥ v0.166) installs its background app-server daemon into
+/// `.codex/packages/app-server-daemon/` and points the `current`
+/// directory junction at the active `releases/<version>` dir — but it
+/// stores the junction target as an ABSOLUTE path. Every time we move a
+/// home (0.4.9 `runtime/` → `rt/`, full-id → compact name) the junction
+/// dangles and Codex refuses to start with "daemon executable not found
+/// at …\packages\app-server-daemon\current\bin\codex.exe".
+///
+/// Re-point the link at the release the home holds: the version recorded in
+/// `auto-update-version` when present, else the newest `releases/` entry.
+/// Runs on every Codex launch and after every home migration, so a dangling
+/// absolute link is always repaired before the daemon starts.
+/// Best effort — a failure here must never block the launch (Codex can
+/// reinstall the daemon via `codex app-server daemon start`).
+pub(crate) fn repair_codex_daemon_link(dir: &Path) {
+    let pkg = dir.join(".codex/packages/app-server-daemon");
+    let Some(release) = pick_codex_daemon_release(&pkg) else {
+        return;
+    };
+    let current = pkg.join("current");
+    let md = fs::symlink_metadata(&current).ok();
+    let broken = match &md {
+        // A junction/symlink that no longer resolves: an absolute target
+        // outlived a home move.
+        Some(m) if m.file_type().is_symlink() => fs::metadata(&current).is_err(),
+        // A real dir (a copy) is already resolvable: leave alone. A plain
+        // file at `current` is never what Codex expects: replace it.
+        Some(m) => !m.file_type().is_dir(),
+        // Missing: create it.
+        None => true,
+    };
+    if !broken {
+        return;
+    }
+    if let Some(m) = &md {
+        // `symlink_metadata` reports a directory junction as a symlink, not
+        // a dir — and only `remove_dir` removes it (remove_file gets access
+        // denied). remove_dir on a (dangling) junction does not follow it.
+        #[cfg(windows)]
+        let as_dir = m.is_dir() || m.file_type().is_symlink();
+        #[cfg(not(windows))]
+        let as_dir = m.is_dir();
+        let _ = if as_dir {
+            fs::remove_dir(&current)
+        } else {
+            fs::remove_file(&current)
+        };
+    }
+    // Windows: an absolute junction, the same layout Codex and `mklink /J`
+    // write (the kernel resolves the mount point from the substitute name
+    // alone — a relative target stores fine but never resolves). The
+    // launch-time repair above keeps it pointed after any home move.
+    // Unix: a relative symlink, which survives moves for free.
+    let made = (|| -> std::io::Result<()> {
+        #[cfg(windows)]
+        create_dir_junction(&current, &pkg.join("releases").join(&release))?;
+        #[cfg(not(windows))]
+        std::os::unix::fs::symlink(
+            std::path::Path::new(&format!("releases/{release}")),
+            &current,
+        )?;
+        Ok(())
+    })();
+    if let Err(e) = made {
+        crate::logging::warn(&format!(
+            "could not repair the codex daemon link {} -> releases/{release}: {e}",
+            current.display()
+        ));
+    }
+}
+
+/// Pick the daemon release to point `current` at: the version recorded in
+/// `auto-update-version` (what the daemon's auto-updater last installed)
+/// when it still exists, else the newest `releases/<name>` directory.
+fn pick_codex_daemon_release(pkg: &Path) -> Option<String> {
+    let releases = pkg.join("releases");
+    let mut names: Vec<String> = fs::read_dir(&releases)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| !n.starts_with('.'))
+        .filter(|n| releases.join(n).is_dir())
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    if let Ok(wanted) = fs::read_to_string(pkg.join("auto-update-version")) {
+        let wanted = wanted.trim().to_string();
+        if names.iter().any(|n| n == &wanted) {
+            return Some(wanted);
+        }
+    }
+    names.sort();
+    names.pop()
+}
+
+/// Create a directory JUNCTION at `path` pointing at the ABSOLUTE `target`
+/// (no reparse-point privileges needed, unlike directory symlinks; the
+/// layout is exactly what `mklink /J` and Codex itself write: the
+/// substitute name carries `\??\<absolute target>` and the print name the
+/// same path for display). Probed on Windows: the kernel resolves a mount
+/// point from the substitute name alone, and a relative substitute name
+/// stores fine but never resolves.
+#[cfg(windows)]
+fn create_dir_junction(path: &Path, target: &Path) -> std::io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+    use windows_sys::Win32::System::SystemServices::IO_REPARSE_TAG_MOUNT_POINT;
+
+    std::fs::create_dir_all(path)?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)?;
+
+    // REPARSE_DATA_BUFFER (mount point): [ReparseTag u32][ReparseDataLength
+    // u16][Reserved u16][MountPointReparseBuffer] where the buffer holds
+    // [SubstOff u16][SubstLen u16][RelOff u16][RelLen u16][PathBuffer] and
+    // the offsets are relative to PathBuffer. The layout is the same one
+    // `mklink /J` writes (see `fsutil reparsepoint query`); the name
+    // lengths exclude the null terminators.
+    //
+    // The substitute name is the NT device path of the absolute target
+    // ("\\?\" + target, no trailing backslash) — that is what the kernel
+    // actually resolves. The print name (reparse name) is the same
+    // absolute path, for display in Explorer.
+    let null = [0u8; 2];
+    // The "\?\" kernel namespace does not normalize slashes: the target
+    // string must carry pure backslashes.
+    let target = target.to_string_lossy().replace('/', "\\");
+    let subst: Vec<u8> = format!("\\??\\{target}")
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    let rel: Vec<u8> = target.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let data_len = 8usize + subst.len() + null.len() + rel.len() + null.len();
+    let mut data: Vec<u8> = Vec::with_capacity(8 + data_len);
+    data.extend_from_slice(&IO_REPARSE_TAG_MOUNT_POINT.to_ne_bytes());
+    data.extend_from_slice(&(data_len as u16).to_ne_bytes());
+    data.extend_from_slice(&0u16.to_ne_bytes()); // Reserved
+    data.extend_from_slice(&0u16.to_ne_bytes()); // SubstituteNameOffset
+    data.extend_from_slice(&(subst.len() as u16).to_ne_bytes());
+    data.extend_from_slice(&((subst.len() + null.len()) as u16).to_ne_bytes()); // RelOff
+    data.extend_from_slice(&(rel.len() as u16).to_ne_bytes());
+    data.extend_from_slice(&subst);
+    data.extend_from_slice(&null);
+    data.extend_from_slice(&rel);
+    data.extend_from_slice(&null);
+
+    let mut bytes_returned: u32 = 0;
+    let rc = unsafe {
+        DeviceIoControl(
+            file.as_raw_handle() as _,
+            FSCTL_SET_REPARSE_POINT,
+            data.as_ptr().cast(),
+            data.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if rc == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -104,6 +285,9 @@ pub fn create_runtime(
     let home = dir.join(engine.home_dir_name());
     fs::create_dir_all(&home)?;
     if matches!(engine, Engine::Codex) {
+        // A home moved by an older version (or by hand) may carry a
+        // dangling daemon link even though nothing moves this launch.
+        repair_codex_daemon_link(&dir);
         // The model catalog gives the profile model real metadata (context
         // window, no reasoning params) and replaces the built-in OpenAI
         // model list — see codex::render_model_catalog.
@@ -636,6 +820,124 @@ mod tests {
         assert!(!deleted
             .iter()
             .any(|p| p == &home));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Scratch home with one installed daemon release; returns the home.
+    fn daemon_home_with(base: &Path, release: &str, content: &str) -> PathBuf {
+        let bin = base
+            .join(".codex/packages/app-server-daemon/releases")
+            .join(release)
+            .join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("codex.exe"), content).unwrap();
+        base.to_path_buf()
+    }
+
+    #[test]
+    fn daemon_link_missing_is_created_and_repaired_after_a_home_move() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        // The home is a subdir of `dir` so it can be renamed onto a sibling.
+        let home = daemon_home_with(&dir.join("home"), "0.166.0-x86_64-pc-windows-msvc", "daemon");
+        repair_codex_daemon_link(&home);
+        let cur = home.join(".codex/packages/app-server-daemon/current");
+        assert!(
+            fs::metadata(cur.join("bin/codex.exe")).is_ok(),
+            "created link must resolve"
+        );
+        // The link is an absolute junction (as Codex writes it), so a home
+        // move (0.4.9 → rt/, full-id → compact) dangles it — and the
+        // launch-time repair must re-point it.
+        let moved = dir.join("moved");
+        fs::rename(&home, &moved).unwrap();
+        let moved_cur = moved.join(".codex/packages/app-server-daemon/current");
+        // Windows stores an absolute junction (dangles across the move);
+        // Unix stores a relative symlink (survives it — the repair below
+        // is a no-op there).
+        #[cfg(windows)]
+        assert!(
+            fs::metadata(moved_cur.join("bin/codex.exe")).is_err(),
+            "absolute link must dangle after the home moved"
+        );
+        repair_codex_daemon_link(&moved);
+        assert!(
+            fs::metadata(moved_cur.join("bin/codex.exe")).is_ok(),
+            "launch-time repair must re-point the dangling link"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_link_dangling_is_repointed() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        // The home is a subdir of `dir` so it can be renamed onto a sibling.
+        let home = daemon_home_with(&dir.join("home"), "0.166.0-x86_64-pc-windows-msvc", "daemon");
+        let cur = home.join(".codex/packages/app-server-daemon/current");
+        // A dangling link: what an absolute junction looks like after the
+        // home moved. (Directory symlinks need no privileges on Unix, so
+        // on Windows we use a dangling junction instead.)
+        #[cfg(windows)]
+        create_dir_junction(&cur, &home.join("gone")).unwrap();
+        #[cfg(not(windows))]
+        std::os::unix::fs::symlink(&dir.join("gone.txt"), &cur).unwrap();
+        repair_codex_daemon_link(&home);
+        assert!(
+            fs::metadata(cur.join("bin/codex.exe")).is_ok(),
+            "dangling link must be repaired"
+        );
+        // And the repaired link must be re-pointable after yet another move.
+        let moved = dir.join("moved");
+        fs::rename(&home, &moved).unwrap();
+        repair_codex_daemon_link(&moved);
+        assert!(
+            fs::metadata(moved.join(".codex/packages/app-server-daemon/current/bin/codex.exe"))
+                .is_ok(),
+            "repaired link must resolve again after the next move"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_link_prefers_the_recorded_auto_update_version() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let pkg = dir.join(".codex/packages/app-server-daemon");
+        let _ = daemon_home_with(&dir, "0.166.0-x86_64-pc-windows-msvc", "old");
+        let _ = daemon_home_with(&dir, "0.167.1-x86_64-pc-windows-msvc", "new");
+        // The auto-updater last installed 0.166.0 — the link must point
+        // there, not at the lexicographically newest release.
+        fs::write(pkg.join("auto-update-version"), "0.166.0-x86_64-pc-windows-msvc")
+            .unwrap();
+        repair_codex_daemon_link(&dir);
+        let body = fs::read_to_string(
+            dir.join(".codex/packages/app-server-daemon/current/bin/codex.exe"),
+        )
+        .unwrap();
+        assert_eq!(body, "old");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn daemon_link_noop_without_releases() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(dir.join(".codex")).unwrap();
+        repair_codex_daemon_link(&dir);
+        assert!(!dir.join(".codex/packages/app-server-daemon/current").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

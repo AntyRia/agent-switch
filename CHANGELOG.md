@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.13] - 2026-11-11
+
+### Fixed
+
+- **Codex profiles failed to launch with "daemon executable not found at
+  …\packages\app-server-daemon\current\bin\codex.exe"** after a home
+  migration: Codex (≥ v0.166) points its app-server daemon's `current`
+  directory junction at the installed release with an ABSOLUTE path, so
+  every home move (0.4.9 `runtime/` → `rt/`, full-id → compact name)
+  left the junction dangling and the daemon could not start. The app now
+  re-creates that junction (as an absolute junction, the same layout
+  Codex and `mklink /J` write) pointing at the release the home actually
+  holds — the version recorded in `auto-update-version` when present,
+  else the newest `releases/` entry — after every home migration and on
+  every Codex launch. The repair is best effort: nothing blocks launch.
+
 ## [0.4.12] - 2026-11-11
 
 ### Fixed
