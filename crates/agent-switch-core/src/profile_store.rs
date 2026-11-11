@@ -70,23 +70,49 @@ impl ProfileStore {
     /// Ensure `rt/` exists; on first use, migrate a 0.4.9 install's
     /// `runtime/` directory into `rt/` (entries are MOVED, never deleted).
     /// Idempotent and cheap once the legacy dir is gone.
+    ///
+    /// The entry moves are best effort: a home that a still-running
+    /// session holds (a terminal left open, a background daemon, a file
+    /// the session is writing) cannot be renamed on Windows (access
+    /// denied) — the current launch must still proceed, and the entry
+    /// migrates on a later start once the handle is gone. A failed move
+    /// never blocks `create_runtime`, which runs this on every launch.
     pub fn ensure_runtime_root(&self) -> Result<()> {
         let rt = self.runtime_dir();
         fs::create_dir_all(&rt)?;
         let legacy = self.root.join("runtime");
         if legacy.is_dir() {
-            for entry in fs::read_dir(&legacy)? {
-                let entry = entry?;
-                let from = entry.path();
-                let to = rt.join(entry.file_name());
-                if !to.exists() {
-                    fs::rename(&from, &to)?;
-                } else if from.is_dir() && to.is_dir() {
-                    Self::merge_dir(&from, &to)?;
+            // Collect first: moving an entry invalidates a live read_dir
+            // iterator on Windows (FindNextFile may skip or stop early).
+            let mut pending = Vec::new();
+            if let Ok(entries) = fs::read_dir(&legacy) {
+                for entry in entries.flatten() {
+                    pending.push((entry.file_name(), entry.path()));
                 }
             }
-            if fs::read_dir(&legacy)?.next().is_none() {
-                fs::remove_dir(&legacy)?;
+            for (name, from) in pending {
+                let to = rt.join(&name);
+                if !to.exists() {
+                    if let Err(e) = fs::rename(&from, &to) {
+                        crate::logging::warn(&format!(
+                            "could not migrate {} to {} (in use? it will migrate on a later start): {e}",
+                            from.display(),
+                            to.display()
+                        ));
+                    }
+                } else if from.is_dir() && to.is_dir() {
+                    if let Err(e) = Self::merge_dir(&from, &to) {
+                        crate::logging::warn(&format!(
+                            "could not merge {} into {}: {e}",
+                            from.display(),
+                            to.display()
+                        ));
+                    }
+                }
+            }
+            let empty = fs::read_dir(&legacy).map(|mut d| d.next().is_none()).unwrap_or(false);
+            if empty {
+                let _ = fs::remove_dir(&legacy);
             }
         }
         Ok(())
@@ -344,6 +370,55 @@ mod tests {
         assert_eq!(fs::read_to_string(merged.join("same")).unwrap(), "new");
         assert!(merged.join("same.legacy1").exists());
         assert!(!dir.join("runtime").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_runtime_root_moves_mixed_entries_and_removes_empty_legacy_root() {
+        let (store, dir) = temp_store();
+        let legacy = dir.join("runtime");
+        fs::create_dir_all(legacy.join("dir-a").join(".codex")).unwrap();
+        fs::write(legacy.join("dir-a/config.toml"), "old").unwrap();
+        // A same-named dir already on the rt side: children are merged,
+        // never clobbered.
+        fs::create_dir_all(legacy.join("dir-b")).unwrap();
+        fs::write(legacy.join("dir-b/old-file"), "old").unwrap();
+        let compact = store.runtime_dir().join("dir-b");
+        fs::create_dir_all(&compact).unwrap();
+        fs::write(compact.join("new-file"), "new").unwrap();
+        fs::write(legacy.join("stray-file"), "x").unwrap();
+
+        store.ensure_runtime_root().unwrap();
+        assert!(store.runtime_dir().join("dir-a/config.toml").exists());
+        assert!(store.runtime_dir().join("dir-a/.codex").is_dir());
+        assert!(compact.join("old-file").exists());
+        assert!(compact.join("new-file").exists());
+        assert!(store.runtime_dir().join("stray-file").exists());
+        // Every entry moved → the legacy root is removed.
+        assert!(!dir.join("runtime").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn ensure_runtime_root_survives_a_locked_legacy_entry() {
+        // A 0.4.9 home whose files are still open (a session running in
+        // it) cannot be renamed on Windows: the move must be skipped
+        // with a warning, not abort the launch.
+        let (store, dir) = temp_store();
+        let legacy = dir.join("runtime");
+        let locked = legacy.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        let held = locked.join("held.txt");
+        fs::write(&held, "x").unwrap();
+        let free = legacy.join("free");
+        fs::create_dir_all(&free).unwrap();
+        let _held_file = std::fs::File::open(&held).unwrap(); // no share-delete
+
+        store.ensure_runtime_root().unwrap();
+        assert!(store.runtime_dir().join("free").is_dir(), "unlocked entry migrates");
+        assert!(locked.exists(), "locked entry stays for a later attempt");
+        assert!(dir.join("runtime").exists(), "legacy root kept while entries remain");
         let _ = fs::remove_dir_all(&dir);
     }
 

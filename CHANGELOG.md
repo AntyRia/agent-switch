@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.12] - 2026-11-11
+
+### Fixed
+
+- **Launch aborted with "IO error: 拒绝访问。 (os error 5)"** when a
+  still-running session held a 0.4.9 `runtime/<id>` directory: the
+  0.4.10→0.4.11 migration moved every legacy entry into `rt/` on each
+  launch, and Windows refuses to rename a directory whose files are still
+  open (a terminal left open in it, a background session, a file being
+  written) — so every subsequent launch re-ran the migration and failed
+  the same way. The per-entry moves are now best effort: an in-use entry
+  is skipped with a warning and migrates automatically on a later start
+  once the handle is gone; the current launch proceeds. No session data
+  is ever deleted — entries are moved, and the legacy `runtime/` root
+  stays until every entry has moved.
+
 ## [0.4.11] - 2026-11-11
 
 ### Fixed
