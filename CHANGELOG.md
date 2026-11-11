@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   high → xhigh → max → ultra), and the effort the user picks is carried
   over when the home's `config.toml` is rewritten on the next launch, so
   the choice persists.
+- **Codex strength picker still stale after a catalog fix**: the
+  per-home Codex app-server daemon caches `config.toml` and
+  `model-catalog.json` in memory for its whole lifetime and serves that
+  cached state to every TUI that connects, so a TUI restart alone kept
+  showing the old (single-strength) catalog. Launch now stops a daemon
+  whose state is older than the rewritten files (Windows verifies the
+  process image before terminating, Unix falls back to a plain signal),
+  and the next TUI start auto-launches a fresh daemon that reads the
+  new catalog.
 - **Pool migration left the home split and history looking wrong**: the
   automatic 0.4.9→0.4.10 home move only renamed an entry to the *same*
   name, and the as-is→compact move ran only at that profile's next

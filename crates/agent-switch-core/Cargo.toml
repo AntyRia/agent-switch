@@ -18,6 +18,11 @@ which = "6"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# POSIX signals for stopping the stale Codex app-server daemon
+# (runtime::restart_codex_app_server_daemon).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Process command-line scan for the session "open" detection
 # (sessions::open_session_ids). Windows-only: Toolhelp + process information.
 [target.'cfg(windows)'.dependencies]

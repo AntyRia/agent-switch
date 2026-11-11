@@ -186,6 +186,184 @@ fn pick_codex_daemon_release(pkg: &Path) -> Option<String> {
     names.pop()
 }
 
+/// Codex (≥ v0.166) keeps its background app-server daemon state in a
+/// directory directly under CODEX_HOME.
+const CODEX_DAEMON_STATE_DIR: &str = "app-server-daemon";
+
+/// Main-daemon and updater pid file names, current and legacy (the daemon
+/// switches to the legacy names when its managed binary lives under
+/// `packages/standalone`).
+const CODEX_DAEMON_PID_FILES: [&str; 4] = [
+    "daemon.pid",
+    "app-server.pid",
+    "daemon-updater.pid",
+    "app-server-updater.pid",
+];
+
+/// True when this home's daemon is likely serving files we have since
+/// replaced on disk: the daemon writes its pid file when it starts, so a
+/// `config.toml` / `model-catalog.json` newer than that file means the
+/// daemon started before our latest rewrite.
+fn codex_daemon_started_before_current_files(home: &Path) -> bool {
+    let state = home.join(CODEX_DAEMON_STATE_DIR);
+    let newest_file = [home.join("config.toml"), home.join("model-catalog.json")]
+        .into_iter()
+        .filter_map(|p| fs::metadata(p).ok())
+        .filter_map(|m| m.modified().ok())
+        .max();
+    let Some(newest_file) = newest_file else {
+        return false;
+    };
+    CODEX_DAEMON_PID_FILES
+        .iter()
+        .filter(|n| !n.contains("updater"))
+        .any(|name| {
+            fs::metadata(state.join(name))
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .is_some_and(|t| newest_file > t)
+        })
+}
+
+/// Stop the per-home Codex app-server daemon (and its auto-updater loop).
+///
+/// The daemon loads `config.toml` / `model-catalog.json` into memory at
+/// startup and serves that state — the model list, the reasoning-effort
+/// ladder — to every TUI that connects to it, so a rewritten file is
+/// invisible until the daemon restarts. The TUI auto-starts a fresh daemon
+/// when its control socket is not listening, which is why this only needs
+/// to stop anything.
+///
+/// Best effort — a failure here must never block the launch. Every pid
+/// comes from the daemon's own pid file, and before terminating the process
+/// image is verified to live under the home's `packages/app-server-daemon`
+/// directory, so a recycled PID from a dead daemon can never kill an
+/// unrelated process.
+pub(crate) fn restart_codex_app_server_daemon(home: &Path) {
+    let state = home.join(CODEX_DAEMON_STATE_DIR);
+    let image_dir = home.join("packages").join("app-server-daemon");
+    let mut stopped = 0u32;
+    // Main daemon first, updater after: the loop does not restart the main
+    // process, but the main's clean shutdown should not race it.
+    for name in CODEX_DAEMON_PID_FILES {
+        let Some(pid) = daemon_pid_from_file(&state.join(name)) else {
+            continue;
+        };
+        if stop_codex_pid(pid, &image_dir) {
+            stopped += 1;
+        }
+    }
+    if stopped > 0 {
+        crate::logging::info(&format!(
+            "stopped {stopped} stale codex app-server daemon process(es) for {}",
+            home.display()
+        ));
+    }
+}
+
+/// Parse a daemon pid file: `{"pid": 23236, "processStartTime": "...",
+/// ...}` — extra fields (process identity, executable identity) are
+/// tolerated, and a missing file or malformed JSON yields `None`.
+fn daemon_pid_from_file(path: &Path) -> Option<u32> {
+    let text = fs::read_to_string(path).ok()?;
+    let record: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let pid = record.get("pid")?.as_u64()?;
+    u32::try_from(pid).ok()
+}
+
+/// Terminate the process if it is alive (and, on Windows, if its image is
+/// under `image_dir`). Returns true when it was terminated.
+#[cfg(windows)]
+fn stop_codex_pid(pid: u32, image_dir: &Path) -> bool {
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_TERMINATE, TerminateProcess,
+    };
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_TERMINATE, 0, pid) };
+    if handle.is_null() {
+        return false; // the pid file is stale: the process is gone
+    }
+    let image = process_image_path(handle)
+        .map(|image| image.replace('/', "\\").to_ascii_lowercase());
+    let want = image_dir.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let matches_image = image.as_deref().is_some_and(|image| image.contains(&want));
+    let killed = matches_image && unsafe { TerminateProcess(handle, 0) } != 0;
+    unsafe {
+        windows_sys::Win32::Foundation::CloseHandle(handle);
+    }
+    killed
+}
+
+/// Full path of the executable a `HANDLE` was opened from (as launched).
+#[cfg(windows)]
+fn process_image_path(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::System::Threading::{
+        PROCESS_NAME_WIN32, QueryFullProcessImageNameW,
+    };
+    // The NULL-buffer size query is unreliable (observed to fail with
+    // ERROR_INVALID_PARAMETER), so probe with a preallocated buffer and
+    // double it while the path does not fit.
+    let mut buf = vec![0u16; 2048];
+    for _ in 0..4 {
+        let mut size = buf.len() as u32;
+        if unsafe {
+            QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
+        } != 0
+        {
+            return Some(String::from_utf16_lossy(&buf[..size as usize]));
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32)
+        {
+            return None;
+        }
+        buf.resize(buf.len() * 2, 0);
+    }
+    None
+}
+
+/// Terminate the process if it is alive. SIGTERM first (the daemon's
+/// graceful shutdown releases its control socket and pid file cleanly),
+/// escalating to SIGKILL — the next TUI must find the socket free, and the
+/// session state lives on disk anyway.
+#[cfg(not(windows))]
+fn stop_codex_pid(pid: u32, _image_dir: &Path) -> bool {
+    use std::time::Duration;
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if unsafe { libc::kill(pid, 0) } != 0 {
+        return false; // no such process: the pid file is stale
+    }
+    let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
+    if wait_pid_gone(pid, 20, Duration::from_millis(100)) {
+        return true;
+    }
+    let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+    wait_pid_gone(pid, 10, Duration::from_millis(50))
+}
+
+#[cfg(not(windows))]
+fn wait_pid_gone(pid: libc::pid_t, attempts: u32, step: std::time::Duration) -> bool {
+    for _ in 0..attempts {
+        if !pid_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(step);
+    }
+    !pid_alive(pid)
+}
+
+#[cfg(not(windows))]
+fn pid_alive(pid: libc::pid_t) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
 /// Create a directory JUNCTION at `path` pointing at the ABSOLUTE `target`
 /// (no reparse-point privileges needed, unlike directory symlinks; the
 /// layout is exactly what `mklink /J` and Codex itself write: the
@@ -297,13 +475,28 @@ pub fn prepare_home_for_launch(
         let catalog_path = home.join("model-catalog.json");
         let config_path = home.join("config.toml");
         let existing = fs::read_to_string(&config_path).ok();
+        let existing_catalog = fs::read_to_string(&catalog_path).ok();
         let config = crate::codex::generate_codex_config(profile, &catalog_path);
         let config = crate::codex::with_project_trust(config, existing.as_deref(), workspace);
         // The user's TUI effort choice survives the rewrite (see the
         // helper).
         let config = crate::codex::with_model_reasoning_effort(config, existing.as_deref());
+        let catalog = crate::codex::render_model_catalog(profile);
+        let config_changed = existing.as_deref() != Some(config.as_str());
+        let catalog_changed = existing_catalog.as_deref() != Some(catalog.as_str());
         fs::write(&config_path, config)?;
-        fs::write(&catalog_path, crate::codex::render_model_catalog(profile))?;
+        fs::write(&catalog_path, catalog)?;
+        // The per-home app-server daemon caches these files in memory for
+        // its whole lifetime and serves that state to every TUI that
+        // connects — a TUI restart alone keeps showing the old catalog.
+        // Stop the daemon whenever the rewrite changed anything, or when
+        // the files were already replaced on disk while a daemon is
+        // running (the pid file is written at daemon start, so it
+        // predates the rewrite): the next TUI launch auto-starts a fresh
+        // daemon that reads the new files.
+        if config_changed || catalog_changed || codex_daemon_started_before_current_files(&home) {
+            restart_codex_app_server_daemon(&home);
+        }
     } else {
         // Base pre-seed (theme + onboarding); the launch paths re-seed with
         // the workspace for the per-project trust entry. Best effort: a
@@ -1008,6 +1201,143 @@ mod tests {
         )
         .unwrap();
         assert_eq!(body, "old");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Set a file's mtime (a read-write handle on a regular file is enough
+    /// on all three CI platforms).
+    fn touch(path: &std::path::Path, time: SystemTime) {
+        let f = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+        f.set_modified(time).unwrap();
+    }
+
+    #[test]
+    fn daemon_pid_file_parses_pid_and_ignores_extra_fields() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-pid-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.pid");
+        // The live shape: pid + start time + executable identity.
+        fs::write(
+            &path,
+            r#"{"pid":23236,"processStartTime":"134388489134460682","executableIdentity":{"digest":[1,2],"path_digest":[3,4]}}"#,
+        )
+        .unwrap();
+        assert_eq!(daemon_pid_from_file(&path), Some(23236));
+        // No pid field / malformed JSON / missing file: no pid.
+        fs::write(&path, r#"{"processStartTime":"x"}"#).unwrap();
+        assert_eq!(daemon_pid_from_file(&path), None);
+        fs::write(&path, "{not json").unwrap();
+        assert_eq!(daemon_pid_from_file(&path), None);
+        assert_eq!(daemon_pid_from_file(&dir.join("missing.pid")), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_codex_daemon_is_a_noop_without_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-noop-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let home = dir.join(".codex");
+        fs::create_dir_all(&home).unwrap();
+        restart_codex_app_server_daemon(&home);
+        // Best effort: no panic and no side effects.
+        assert!(!home.join(CODEX_DAEMON_STATE_DIR).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn codex_daemon_started_before_current_files_detects_a_rewrite() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-stale-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let home = dir.join(".codex");
+        let state = home.join(CODEX_DAEMON_STATE_DIR);
+        fs::create_dir_all(&state).unwrap();
+        let cfg = home.join("config.toml");
+        fs::write(&cfg, "a").unwrap();
+        // The pid file lands AFTER the last file write: the daemon started
+        // with the current content — no restart needed.
+        let pid_file = state.join("daemon.pid");
+        fs::write(&pid_file, r#"{"pid":1}"#).unwrap();
+        assert!(!codex_daemon_started_before_current_files(&home));
+
+        // A rewrite after the daemon started: the pid file now predates
+        // the config — restart needed.
+        fs::write(&cfg, "b").unwrap();
+        let now = SystemTime::now();
+        touch(&pid_file, now - Duration::from_secs(3600));
+        touch(&cfg, now);
+        assert!(codex_daemon_started_before_current_files(&home));
+
+        // A config older than the pid file: no restart needed.
+        touch(&cfg, now - Duration::from_secs(7200));
+        assert!(!codex_daemon_started_before_current_files(&home));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_codex_daemon_stops_the_process_named_in_its_pid_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-daemon-kill-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let home = dir.join(".codex");
+        let state = home.join(CODEX_DAEMON_STATE_DIR);
+        fs::create_dir_all(&state).unwrap();
+        let image_dir = home.join("packages").join("app-server-daemon");
+        let mut child = if cfg!(windows) {
+            // A long-lived applet standing in for the daemon executable:
+            // its image must live under the home's daemon directory for
+            // the image check to pass (the real daemon's does).
+            let bin = image_dir.join("current").join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            let ping = bin.join("ping.exe");
+            std::fs::copy(r"C:\Windows\System32\ping.exe", &ping).unwrap();
+            std::process::Command::new(&ping)
+                .args(["-n", "61", "-w", "1000", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        } else {
+            std::process::Command::new("/bin/sleep")
+                .arg("60")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+
+        fs::write(
+            state.join("daemon.pid"),
+            serde_json::json!({"pid": child.id(), "processStartTime": "x"}).to_string(),
+        )
+        .unwrap();
+
+        restart_codex_app_server_daemon(&home);
+
+        let mut gone = false;
+        for _ in 0..100 {
+            if child.try_wait().ok().flatten().is_some() {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(gone, "the process named in daemon.pid must have been stopped");
+        // A second pass over the now-dead pid must be a quiet no-op, and
+        // the pid file is left for the next daemon to overwrite.
+        restart_codex_app_server_daemon(&home);
+        assert!(state.join("daemon.pid").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
