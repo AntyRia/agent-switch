@@ -116,6 +116,17 @@ impl ProfileStore {
     /// `runtime/` directory into `rt/` (entries are MOVED, never deleted).
     /// Idempotent and cheap once the legacy dir is gone.
     ///
+    /// Homes are migrated profile-aware, in ONE pass: an entry named after
+    /// a profile (full id or compact token) lands in that profile's
+    /// compact home directly — a transcript under the legacy root and one
+    /// already in the compact home MERGE, so session history is complete
+    /// without waiting for the profile's next launch. An entry whose
+    /// profile no longer exists keeps its name. The as-is → compact moves
+    /// 0.4.10 and earlier left to launch time (pre-0.4.10 apps named homes
+    /// after the full id; 0.4.10 renamed only homes it created) are
+    /// completed here too, so the pool listing is honest for profiles that
+    /// have not been launched yet.
+    ///
     /// The entry moves are best effort: a home that a still-running
     /// session holds (a terminal left open, a background daemon, a file
     /// the session is writing) cannot be renamed on Windows (access
@@ -125,40 +136,86 @@ impl ProfileStore {
     pub fn ensure_runtime_root(&self) -> Result<()> {
         let rt = self.runtime_dir();
         fs::create_dir_all(&rt)?;
+        let profiles = self.list().unwrap_or_default();
         let legacy = self.root.join("runtime");
         if legacy.is_dir() {
-            // Collect first: moving an entry invalidates a live read_dir
-            // iterator on Windows (FindNextFile may skip or stop early).
-            let mut pending = Vec::new();
-            if let Ok(entries) = fs::read_dir(&legacy) {
-                for entry in entries.flatten() {
-                    pending.push((entry.file_name(), entry.path()));
-                }
-            }
-            for (name, from) in pending {
-                let to = rt.join(&name);
-                if !to.exists() {
-                    match fs::rename(&from, &to) {
-                        Ok(()) => crate::runtime::repair_codex_daemon_link(&to),
-                        Err(e) => crate::logging::warn(&format!(
-                            "could not migrate {} to {} (in use? it will migrate on a later start): {e}",
-                            from.display(),
-                            to.display()
-                        )),
-                    }
-                } else if from.is_dir() && to.is_dir() {
-                    if let Err(e) = Self::merge_dir(&from, &to) {
-                        crate::logging::warn(&format!(
-                            "could not merge {} into {}: {e}",
-                            from.display(),
-                            to.display()
-                        ));
+            // A custom pool dir can be the legacy dir itself; moving an
+            // entry onto itself would fail (or spin), so skip the block.
+            let distinct = legacy != rt
+                && std::fs::canonicalize(&legacy)
+                    .ok()
+                    .zip(std::fs::canonicalize(&rt).ok())
+                    .is_some_and(|(a, b)| a != b);
+            if distinct {
+                // Collect first: moving an entry invalidates a live read_dir
+                // iterator on Windows (FindNextFile may skip or stop early).
+                let mut pending = Vec::new();
+                if let Ok(entries) = fs::read_dir(&legacy) {
+                    for entry in entries.flatten() {
+                        pending.push((entry.file_name(), entry.path()));
                     }
                 }
+                for (name, from) in pending {
+                    let name = name.to_string_lossy().into_owned();
+                    // Full-id (0.4.9) and as-is (pre-0.4.10) names both
+                    // resolve to the profile's compact home.
+                    let compact = profiles
+                        .iter()
+                        .find(|p| p.id == name || crate::runtime::compact_home_name(&p.id) == name)
+                        .map(|p| crate::runtime::compact_home_name(&p.id))
+                        .unwrap_or_else(|| name.clone());
+                    let to = rt.join(&compact);
+                    if !to.exists() {
+                        match fs::rename(&from, &to) {
+                            Ok(()) => crate::runtime::repair_codex_daemon_link(&to),
+                            Err(e) => crate::logging::warn(&format!(
+                                "could not migrate {} to {} (in use? it will migrate on a later start): {e}",
+                                from.display(),
+                                to.display()
+                            )),
+                        }
+                    } else if from.is_dir() && to.is_dir() {
+                        if let Err(e) = Self::merge_dir(&from, &to) {
+                            crate::logging::warn(&format!(
+                                "could not merge {} into {}: {e}",
+                                from.display(),
+                                to.display()
+                            ));
+                        }
+                    }
+                }
+                let empty =
+                    fs::read_dir(&legacy).map(|mut d| d.next().is_none()).unwrap_or(false);
+                if empty {
+                    let _ = fs::remove_dir(&legacy);
+                }
             }
-            let empty = fs::read_dir(&legacy).map(|mut d| d.next().is_none()).unwrap_or(false);
-            if empty {
-                let _ = fs::remove_dir(&legacy);
+        }
+        // rt/<full-id> → rt/<compact> for every profile 0.4.10 and earlier
+        // left behind (see the doc). Best effort, same as the legacy pass.
+        for p in &profiles {
+            let compact = crate::runtime::compact_home_name(&p.id);
+            if compact == p.id {
+                continue;
+            }
+            let as_is = rt.join(&p.id);
+            if !as_is.is_dir() {
+                continue;
+            }
+            let compact_dir = rt.join(&compact);
+            let ok = if compact_dir.is_dir() {
+                Self::merge_dir(&as_is, &compact_dir).is_ok()
+            } else {
+                fs::rename(&as_is, &compact_dir).is_ok()
+            };
+            if ok {
+                crate::runtime::repair_codex_daemon_link(&compact_dir);
+            } else {
+                crate::logging::warn(&format!(
+                    "could not migrate {} to {} (in use? it will migrate on a later start)",
+                    as_is.display(),
+                    compact_dir.display()
+                ));
             }
         }
         Ok(())
@@ -442,6 +499,73 @@ mod tests {
         assert!(store.runtime_dir().join("stray-file").exists());
         // Every entry moved → the legacy root is removed.
         assert!(!dir.join("runtime").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_runtime_root_migrates_full_id_home_directly_to_compact() {
+        let (store, dir) = temp_store();
+        let id = "5c6479a1-b596-47fc-9525-12b0e6fd20b5";
+        store.save(&profile(id), None).unwrap();
+        let compact = crate::runtime::compact_home_name(id);
+        // 0.4.9 layout: the legacy root holds the FULL-id home.
+        let legacy = dir.join("runtime").join(id);
+        fs::create_dir_all(legacy.join(".claude")).unwrap();
+        fs::write(legacy.join(".claude/transcript.jsonl"), "old").unwrap();
+        // A session already started under the compact home in the new root.
+        let fresh = store.runtime_dir().join(&compact);
+        fs::create_dir_all(fresh.join(".claude")).unwrap();
+        fs::write(fresh.join(".claude/newer.jsonl"), "new").unwrap();
+
+        store.ensure_runtime_root().unwrap();
+        let merged = store.runtime_dir().join(&compact);
+        assert!(
+            merged.join(".claude/transcript.jsonl").exists(),
+            "the legacy transcript must land in the compact home"
+        );
+        assert!(merged.join(".claude/newer.jsonl").exists());
+        assert!(!legacy.exists(), "legacy full-id dir must be moved");
+        assert!(!dir.join("runtime").exists(), "legacy root must be removed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_runtime_root_merges_as_is_home_under_rt_into_compact() {
+        let (store, dir) = temp_store();
+        // >8 chars → the compact name is a hash token, not the id.
+        let id = "deepseek-claude";
+        store.save(&profile(id), None).unwrap();
+        let compact = crate::runtime::compact_home_name(id);
+        assert_ne!(compact, id);
+        // Pre-0.4.10 apps named the home after the full id under rt/;
+        // 0.4.10 renamed only homes it created. The old pass ran at launch
+        // time — the one under rt/ is completed here instead.
+        let as_is = store.runtime_dir().join(id);
+        fs::create_dir_all(as_is.join(".claude")).unwrap();
+        fs::write(as_is.join(".claude/t.jsonl"), "old").unwrap();
+
+        store.ensure_runtime_root().unwrap();
+        let merged = store.runtime_dir().join(&compact);
+        assert!(
+            merged.join(".claude/t.jsonl").exists(),
+            "as-is home content must move into the compact home"
+        );
+        assert!(!as_is.exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ensure_runtime_root_keeps_orphan_entries_as_is() {
+        let (store, dir) = temp_store();
+        store.save(&profile("gpt"), None).unwrap();
+        // A home whose profile no longer exists: keep its name (it may
+        // still hold listed sessions), just move it into the new root.
+        let legacy = dir.join("runtime");
+        fs::create_dir_all(legacy.join("gone-profile")).unwrap();
+        fs::write(legacy.join("gone-profile/keep.txt"), "x").unwrap();
+
+        store.ensure_runtime_root().unwrap();
+        assert!(store.runtime_dir().join("gone-profile/keep.txt").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

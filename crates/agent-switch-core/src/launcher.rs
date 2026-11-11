@@ -300,6 +300,15 @@ fn non_secret_env(runtime: &Runtime, profile: &Profile) -> Vec<(&'static str, St
     }
 }
 
+/// True when both dirs exist and canonicalize to the same path (the pool
+/// root may be a junction, so compare canonical forms, not strings).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    std::fs::canonicalize(a)
+        .ok()
+        .zip(std::fs::canonicalize(b).ok())
+        .is_some_and(|(x, y)| x == y)
+}
+
 /// Create the isolated runtime plus a start script a system terminal can run.
 ///
 /// `script_stem` names the generated script (`<stem>.ps1` / `<stem>.sh` in
@@ -315,7 +324,43 @@ pub fn prepare_terminal_launch(
     script_stem: &str,
 ) -> Result<TerminalLaunch> {
     crate::cli_health::ensure_ready(profile.engine())?;
-    prepare_terminal_launch_impl(store, profile, settings, workspace, extra_args, script_stem)
+    prepare_terminal_launch_impl(
+        store,
+        profile,
+        settings,
+        workspace,
+        extra_args,
+        script_stem,
+        None,
+    )
+}
+
+/// Like [`prepare_terminal_launch`], but the launch happens inside `home`
+/// — the pool-root dir that actually contains the session transcript —
+/// instead of the profile's current home (used for session resume/attach:
+/// a transcript still sitting in a 0.4.9 `runtime/` leftover or a
+/// pre-0.4.10 dir name must be resumed THERE, or the CLI cannot find the
+/// conversation). If the dir no longer exists (the home migrated since)
+/// the profile's current home is used.
+pub fn prepare_terminal_launch_with_home(
+    store: &ProfileStore,
+    profile: &Profile,
+    settings: &Settings,
+    workspace: &Path,
+    extra_args: &[String],
+    script_stem: &str,
+    home: &Path,
+) -> Result<TerminalLaunch> {
+    crate::cli_health::ensure_ready(profile.engine())?;
+    prepare_terminal_launch_impl(
+        store,
+        profile,
+        settings,
+        workspace,
+        extra_args,
+        script_stem,
+        Some(home),
+    )
 }
 
 // Script generation is tested without installed CLIs or real user config;
@@ -327,8 +372,24 @@ fn prepare_terminal_launch_impl(
     workspace: &Path,
     extra_args: &[String],
     script_stem: &str,
+    home_override: Option<&Path>,
 ) -> Result<TerminalLaunch> {
-    let runtime = create_runtime(store, profile, workspace)?;
+    let mut runtime = create_runtime(store, profile, workspace)?;
+    // The transcript may still live in a different home (a 0.4.9 `runtime/`
+    // leftover a running session keeps locked, or a pre-0.4.10 as-is dir):
+    // launch THERE so `--resume` / `resume` / `attach` find it. A home that
+    // migrated since the session was listed (create_runtime does the move
+    // best-effort) falls back to the current home.
+    if let Some(home_dir) = home_override {
+        if home_dir.is_dir() && !same_dir(home_dir, &runtime.dir) {
+            runtime = crate::runtime::prepare_home_for_launch(
+                home_dir,
+                profile.engine(),
+                profile,
+                workspace,
+            )?;
+        }
+    }
     if matches!(runtime.engine, Engine::Claude) {
         // Best effort: pre-seed the isolated home so the first launch
         // skips onboarding (theme picker, per-project trust dialog).
@@ -405,13 +466,17 @@ pub fn resume_in_terminal(
         if attaching { "attach" } else { "resume" },
         session.session_id
     );
-    let launch = prepare_terminal_launch(
+    // Launch in the home dir that actually contains the transcript
+    // (`session.home`) — for an old session that is a legacy/leftover home,
+    // not the profile's current one.
+    let launch = prepare_terminal_launch_with_home(
         store,
         &store.get(&session.profile_id)?,
         settings,
         &workspace,
         &args,
         &stem,
+        &session.home,
     )?;
     if let Some(guard) = &guard {
         guard.wrap_script(&launch.script_path)?;
@@ -728,7 +793,7 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         let p = profile("codex", Some("sk-script-secret".into()), None, None);
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(!content.contains("sk-script-secret"));
@@ -755,7 +820,7 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         let p = profile("codex", Some("sk-bom".into()), None, None);
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         let bytes = std::fs::read(&launch.script_path).unwrap();
         assert!(
@@ -780,7 +845,7 @@ mod tests {
             Some("auth_token".into()),
         );
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         // Non-secret runtime env is written to the script (both ps1 and sh
@@ -798,6 +863,104 @@ mod tests {
                 "sk-claude-secret".to_string()
             )]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn launch_with_home_override_runs_in_that_home() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-launch-home-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let p = profile(
+            "claude",
+            Some("sk-home-override".into()),
+            None,
+            Some("auth_token".into()),
+        );
+        // The transcript still lives in a home that is NOT the profile's
+        // current one (a 0.4.9 `runtime/` leftover a running session kept
+        // locked — or a pre-0.4.10 as-is dir name).
+        let other = store.runtime_dir().join("orphan-home");
+        std::fs::create_dir_all(other.join(".claude")).unwrap();
+
+        let launch = prepare_terminal_launch_with_home(
+            &store,
+            &p,
+            &Settings::default(),
+            &dir,
+            &["--resume".to_string(), "sess".to_string()],
+            "resume-sess",
+            &other,
+        )
+        .unwrap();
+        // Launched inside the override home, not the profile's current one.
+        assert_eq!(launch.runtime.dir, other);
+        assert_eq!(launch.runtime.home, other.join(".claude"));
+        let content = std::fs::read_to_string(&launch.script_path).unwrap();
+        assert!(content.contains("CLAUDE_CONFIG_DIR"));
+        assert!(
+            content.contains("orphan-home"),
+            "the script must point at the override home: {content}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn launch_with_home_override_same_as_current_keeps_current() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-launch-same-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let p = profile("claude", Some("sk-same".into()), None, Some("auth_token".into()));
+        // The override is the profile's own current home (the common case:
+        // a session listed from the active root) — the normal path applies.
+        let current = store.runtime_dir().join("t"); // profile id "t"
+        std::fs::create_dir_all(&current).unwrap();
+
+        let launch = prepare_terminal_launch_with_home(
+            &store,
+            &p,
+            &Settings::default(),
+            &dir,
+            &["--resume".to_string(), "sess".to_string()],
+            "resume-sess",
+            &current,
+        )
+        .unwrap();
+        assert_eq!(launch.runtime.dir, current);
+        assert_eq!(launch.runtime.home, current.join(".claude"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn launch_with_home_override_gone_falls_back_to_current() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-launch-gone-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let store = ProfileStore { root: dir.clone() };
+        let p = profile("claude", Some("sk-gone".into()), None, Some("auth_token".into()));
+        // The listed home migrated away since the session was read: the
+        // transcript now lives in the current home, so launch there.
+        let gone = store.runtime_dir().join("moved-away");
+
+        let launch = prepare_terminal_launch_with_home(
+            &store,
+            &p,
+            &Settings::default(),
+            &dir,
+            &["--resume".to_string(), "sess".to_string()],
+            "resume-sess",
+            &gone,
+        )
+        .unwrap();
+        assert_eq!(launch.runtime.dir, store.runtime_dir().join("t"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -823,6 +986,7 @@ mod tests {
                 "aaaa1111-2222-3333-4444-555566667777".to_string(),
             ],
             "start",
+            None,
         )
         .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
@@ -841,6 +1005,7 @@ mod tests {
                 "bbbb2222-3333-4444-5555-666677778888".to_string(),
             ],
             "start",
+            None,
         )
         .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
@@ -904,7 +1069,7 @@ mod tests {
         let store = ProfileStore { root: dir.clone() };
         let p = profile("claude", Some("sk-force".into()), None, None);
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(content.contains("CLAUDE_CODE_FORCE_SESSION_PERSISTENCE"));
@@ -927,7 +1092,7 @@ mod tests {
             Some("api_key".into()),
         );
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         assert_eq!(
             launch.env,
@@ -969,7 +1134,7 @@ mod tests {
         s.proxy_host = "127.0.0.1".into();
         s.proxy_port = 7897;
         let p = profile("codex", Some("sk-settings-secret".into()), None, None);
-        let launch = prepare_terminal_launch_impl(&store, &p, &s, &dir, &[], "start").unwrap();
+        let launch = prepare_terminal_launch_impl(&store, &p, &s, &dir, &[], "start", None).unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         // The bypass flag is baked into the generated script...
         assert!(content.contains("--dangerously-bypass-approvals-and-sandbox"));
@@ -983,7 +1148,7 @@ mod tests {
         assert!(!content.contains("HTTP_PROXY"));
         // Default settings: no flag, no proxy.
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start2")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start2", None)
                 .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(!content.contains("--dangerously"));
@@ -1011,7 +1176,7 @@ mod tests {
         let flag = "--dangerously-bypass-approvals-and-sandbox".to_string();
         let p = profile("codex", Some("sk-dup".into()), None, None);
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &s, &dir, &[flag.clone()], "start").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &s, &dir, &[flag.clone()], "start", None).unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert_eq!(
             content.matches(&flag).count(),
@@ -1019,14 +1184,14 @@ mod tests {
             "flag duplicated in script:\n{content}"
         );
         // No caller args → the launcher adds it, still exactly once.
-        let launch = prepare_terminal_launch_impl(&store, &p, &s, &dir, &[], "start2").unwrap();
+        let launch = prepare_terminal_launch_impl(&store, &p, &s, &dir, &[], "start2", None).unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert_eq!(content.matches(&flag).count(), 1);
         // claude flag, same rule.
         let p = profile("claude", Some("sk-dup2".into()), None, None);
         let cflag = "--dangerously-skip-permissions".to_string();
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &s, &dir, &[cflag.clone()], "start3").unwrap();
+            prepare_terminal_launch_impl(&store, &p, &s, &dir, &[cflag.clone()], "start3", None).unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert_eq!(content.matches(&cflag).count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1048,7 +1213,7 @@ mod tests {
         let mut p = profile("claude", None, None, None);
         p.provider.provider_type = "official".into();
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         let content = std::fs::read_to_string(&launch.script_path).unwrap();
         assert!(content.contains("CLAUDE_CONFIG_DIR"));
@@ -1076,7 +1241,7 @@ mod tests {
         );
         p.provider.provider_type = "official".into();
         let launch =
-            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start")
+            prepare_terminal_launch_impl(&store, &p, &Settings::default(), &dir, &[], "start", None)
                 .unwrap();
         assert_eq!(
             launch.env,
@@ -1088,7 +1253,7 @@ mod tests {
         let mut pc = profile("codex", Some("sk-official".into()), None, None);
         pc.provider.provider_type = "official".into();
         let launch =
-            prepare_terminal_launch_impl(&store, &pc, &Settings::default(), &dir, &[], "start2")
+            prepare_terminal_launch_impl(&store, &pc, &Settings::default(), &dir, &[], "start2", None)
                 .unwrap();
         assert_eq!(
             launch.env,

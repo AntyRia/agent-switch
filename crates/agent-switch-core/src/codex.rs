@@ -118,6 +118,49 @@ pub fn with_project_trust(config: String, existing: Option<&str>, workspace: &Pa
     }
 }
 
+/// Carry Codex's persisted model reasoning-effort selection over the
+/// every-launch config rewrite.
+///
+/// When the user picks an effort (model strength) in the TUI, Codex
+/// writes `model_reasoning_effort` into `config.toml` next to the
+/// `[projects]` trust table. The rewrite regenerates only the
+/// profile-owned keys, so without this the user's choice would be
+/// silently reverted on the next launch. Only values the generated
+/// catalog's ladder offers are carried — a stale or future key (e.g.
+/// `default`) is dropped so it can never make Codex fail to parse the
+/// config.
+pub fn with_model_reasoning_effort(config: String, existing: Option<&str>) -> String {
+    let Some(value) = existing
+        .and_then(|raw| raw.parse::<toml::Value>().ok())
+        .and_then(|doc| doc.get("model_reasoning_effort")?.as_str().map(str::to_string))
+    else {
+        return config;
+    };
+    const LADDER: [&str; 7] = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
+    if !LADDER.contains(&value.as_str()) {
+        return config;
+    }
+    let line = format!("model_reasoning_effort = {}\n", toml::Value::String(value));
+    // Top-level keys must precede the first [table] header.
+    let mut out: Vec<String> = Vec::new();
+    let mut inserted = false;
+    for l in config.lines() {
+        if !inserted && l.starts_with('[') {
+            out.push(line.clone());
+            inserted = true;
+        }
+        out.push(l.to_string());
+    }
+    if !inserted {
+        out.push(line);
+    }
+    let mut s = out.join("\n");
+    if config.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
 /// Every model id the profile declares: the default model first, then the
 /// profile's `models` list (deduplicated, order preserved). The catalog
 /// may still drop `codex-auto-*` ids (see `render_model_catalog`).
@@ -159,13 +202,18 @@ pub fn profile_model_ids(p: &Profile) -> Vec<String> {
 ///   "All models" indirection) instead of one flat list. Relays serve
 ///   such ids (e.g. `codex-auto-review`) although they have no meaning
 ///   for a third-party profile.
-/// - every entry carries EXACTLY ONE supported reasoning level
-///   (`none`, the profile's effective default since the generated
-///   config sets no `model_reasoning_effort`): the TUI applies a
-///   selected model and closes the picker in one step only for
-///   single-effort models; with an empty list it opens a reasoning
-///   sub-popup on every selection, so the picker appears stuck (the
-///   model is actually changed behind it).
+/// - every entry carries the full reasoning-level set
+///   (none + the standard GPT ladder low → ultra, with the stock
+///   descriptions): the TUI's /model picker shows the model's
+///   supported efforts and opens a reasoning sub-popup after the model
+///   choice, so the user can pick the model strength. With exactly one
+///   level the picker offers nothing to choose (and with an empty list
+///   it re-opens the sub-popup on every selection, so the picker
+///   appears stuck — the model is actually changed behind it).
+///   `default_reasoning_level` stays `none`: a relay that does not
+///   speak the `reasoning` parameter keeps working, and the user's
+///   explicit choice (persisted by Codex into `config.toml`) is
+///   honoured and carried over — see `with_model_reasoning_effort`.
 ///
 /// Entry schema notes (empirically verified against codex 0.148):
 /// - `base_instructions` is REQUIRED (a string) — missing/null aborts
@@ -186,8 +234,19 @@ pub fn render_model_catalog(p: &Profile) -> String {
                 "description": "Profile model managed by Agent Switch.",
                 "base_instructions": STANDARD_BASE_INSTRUCTIONS,
                 "default_reasoning_level": "none",
+                // The stock GPT ladder (wording copied from Codex's
+                // built-in catalog, verified against 0.166.0) plus
+                // `none` — non-reasoning relay models (and users who
+                // want the fastest/cheapest path) need an explicit off
+                // switch, and the profile default stays `none`.
                 "supported_reasoning_levels": [
-                    { "effort": "none", "description": "Direct responses without extended reasoning" }
+                    { "effort": "none", "description": "No extended reasoning — fastest and cheapest" },
+                    { "effort": "low", "description": "Fast responses with lighter reasoning" },
+                    { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" },
+                    { "effort": "high", "description": "Greater reasoning depth for complex problems" },
+                    { "effort": "xhigh", "description": "Extra high reasoning depth for complex problems" },
+                    { "effort": "max", "description": "Maximum reasoning depth for the hardest problems" },
+                    { "effort": "ultra", "description": "Maximum reasoning with automatic task delegation" }
                 ],
                 "shell_type": "shell_command",
                 "visibility": "list",
@@ -397,6 +456,39 @@ trust_level = "trusted"
     }
 
     #[test]
+    fn effort_carryover_preserves_the_user_choice_in_toml_position() {
+        let cfg = generate_codex_config(&sample(), Path::new("/rt/x/model-catalog.json"));
+        let cfg = with_model_reasoning_effort(cfg, Some("model_reasoning_effort = \"high\"\n"));
+        // The key stays TOP-LEVEL (before the first [table])…
+        let effort_line = cfg
+            .lines()
+            .position(|l| l.starts_with("model_reasoning_effort = "))
+            .unwrap();
+        let first_table = cfg.lines().position(|l| l.starts_with('[')).unwrap();
+        assert!(effort_line < first_table);
+        // …and carries the user's value verbatim.
+        assert!(cfg.contains("model_reasoning_effort = \"high\""));
+        // The whole file still parses as TOML.
+        let doc: toml::Value = cfg.parse().unwrap();
+        assert_eq!(doc["model_reasoning_effort"], toml::Value::String("high".into()));
+    }
+
+    #[test]
+    fn effort_carryover_drops_unknown_values() {
+        let cfg = generate_codex_config(&sample(), Path::new("/rt/x/model-catalog.json"));
+        // `default` is the TUI display for an unset effort, not a config
+        // value — a stale one must not reach the file.
+        let cfg = with_model_reasoning_effort(cfg, Some("model_reasoning_effort = \"default\"\n"));
+        assert!(!cfg.contains("model_reasoning_effort"));
+        // No existing config at all: untouched.
+        let cfg = with_model_reasoning_effort(cfg, None);
+        assert!(!cfg.contains("model_reasoning_effort"));
+        // A parseable existing config without the key: untouched.
+        let cfg = with_model_reasoning_effort(cfg, Some("model = \"gpt-6.1-sol\"\n"));
+        assert!(!cfg.contains("model_reasoning_effort"));
+    }
+
+    #[test]
     fn windows_sandbox_mode_is_pinned_on_windows() {
         let cfg = generate_codex_config(&sample(), Path::new("/rt/x/model-catalog.json"));
         if cfg!(target_os = "windows") {
@@ -424,15 +516,22 @@ trust_level = "trusted"
         // No code-mode tooling for third-party servers.
         assert_eq!(entry["tool_mode"], serde_json::json!(null));
         assert_eq!(entry["use_responses_lite"], serde_json::json!(false));
-        // Exactly one supported effort (matching the effort-less third-
-        // party default) — with an empty list the TUI's /model picker
-        // would not dismiss after a selection.
+        // The profile default stays `none` (a relay that does not speak
+        // the `reasoning` parameter keeps working), and the full ladder
+        // is offered so the TUI /model picker lets the user choose the
+        // model strength.
         assert_eq!(entry["default_reasoning_level"], "none");
+        let levels = entry["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["effort"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>();
         assert_eq!(
-            entry["supported_reasoning_levels"],
-            serde_json::json!([
-                { "effort": "none", "description": "Direct responses without extended reasoning" }
-            ])
+            levels,
+            vec![
+                "none", "low", "medium", "high", "xhigh", "max", "ultra"
+            ]
         );
     }
 

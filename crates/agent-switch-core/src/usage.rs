@@ -111,7 +111,7 @@ fn file_cache() -> &'static Mutex<HashMap<PathBuf, CacheEntry>> {
 pub fn list_usage(store: &ProfileStore) -> Vec<SessionUsage> {
     let entries = crate::sessions::session_file_entries(store).unwrap_or_default();
     let mut out = Vec::new();
-    for (path, engine, profile_id) in entries {
+    for (path, engine, profile_id, _home) in entries {
         if let Some(usage) = usage_for_file(&path, engine, &profile_id) {
             out.push(usage);
         }
@@ -181,7 +181,7 @@ pub fn export_csv(store: &ProfileStore, path: &Path) -> Result<CsvExport> {
 
     let mut lines: Vec<(i64, String)> = Vec::new();
     let mut sessions = 0usize;
-    for (file, engine, profile_id) in entries {
+    for (file, engine, profile_id, _home) in entries {
         let usage = match engine {
             Engine::Claude => scan_claude(&file, None),
             Engine::Codex => scan_codex(&file, None),

@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.15] - 2026-11-11
+
+### Fixed
+
+- **Codex TUI could not pick a model reasoning effort**: the generated
+  model catalog only exposed the profile's default effort level, so the
+  Codex TUI's model picker had no strength options to show. Catalog
+  entries now carry the full reasoning ladder (none → low → medium →
+  high → xhigh → max → ultra), and the effort the user picks is carried
+  over when the home's `config.toml` is rewritten on the next launch, so
+  the choice persists.
+- **Pool migration left the home split and history looking wrong**: the
+  automatic 0.4.9→0.4.10 home move only renamed an entry to the *same*
+  name, and the as-is→compact move ran only at that profile's next
+  launch. A home a running session kept locked therefore sat in
+  `runtime/` with its full-id name forever, and a session listed from a
+  leftover home resumed in the profile's (empty) current home, so the
+  conversation appeared to vanish. Homes are now migrated
+  profile-aware in one pass — a legacy/as-is entry lands directly in the
+  profile's compact home, merging with what is already there (transcripts
+  are never clobbered), and the as-is→compact move no longer waits for a
+  launch. Every session also records the pool dir that actually holds
+  its transcript, and resume/attach now launch the CLI inside THAT dir,
+  so history from a leftover home is found and carried on.
+
 ## [0.4.14] - 2026-11-11
 
 ### Added

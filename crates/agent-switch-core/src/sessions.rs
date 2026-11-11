@@ -23,6 +23,13 @@ pub struct Session {
     pub session_id: String,
     /// Profile (home dir) the session belongs to.
     pub profile_id: String,
+    /// The isolated home dir that actually contains the transcript
+    /// (`<pool-root>/<home>`). Normally the profile's current home — but a
+    /// transcript still sitting in the 0.4.9 `runtime/` leftover root (a
+    /// home a running session kept locked) or in a pre-0.4.10 dir name
+    /// lives in a DIFFERENT dir: resuming must launch there, or the CLI
+    /// would not find the conversation.
+    pub home: PathBuf,
     pub engine: Engine,
     /// Working directory the session was run in (best effort).
     pub cwd: Option<String>,
@@ -63,7 +70,11 @@ pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
     let mut out: Vec<Session> = if entries.len() <= PARALLEL_PARSE_MIN {
         entries
             .into_iter()
-            .filter_map(|(path, engine, profile_id)| session_from_file(&path, engine, &profile_id))
+            .filter_map(
+                |(path, engine, profile_id, home)| {
+                    session_from_file(&path, engine, &profile_id, &home)
+                },
+            )
             .collect()
     } else {
         let workers = std::thread::available_parallelism()
@@ -78,8 +89,8 @@ pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
                 handles.push(s.spawn(move || {
                     chunk
                         .into_iter()
-                        .filter_map(|(path, engine, profile_id)| {
-                            session_from_file(&path, engine, &profile_id)
+                        .filter_map(|(path, engine, profile_id, home)| {
+                            session_from_file(&path, engine, &profile_id, &home)
                         })
                         .collect::<Vec<_>>()
                 }));
@@ -104,7 +115,7 @@ pub fn list_sessions(store: &ProfileStore) -> Result<Vec<Session>> {
 /// requested id (a rare content-derived-id mismatch) we fall back to the full
 /// scan so the answer is identical to what the pool itself lists.
 pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
-    for (path, engine, profile_id) in session_file_entries(store)? {
+    for (path, engine, profile_id, home) in session_file_entries(store)? {
         let name_matches = match engine {
             Engine::Claude => file_stem(&path) == session_id,
             Engine::Codex => rollout_session_id(&file_stem(&path)) == session_id,
@@ -112,7 +123,7 @@ pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
         if !name_matches {
             continue;
         }
-        if let Some(s) = session_from_file(&path, engine, &profile_id) {
+        if let Some(s) = session_from_file(&path, engine, &profile_id, &home) {
             if s.session_id == session_id {
                 return Ok(s);
             }
@@ -126,10 +137,13 @@ pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
     Err(Error::Other(format!("session not found: {session_id}")))
 }
 
-/// Enumerate every session file as `(path, engine, profile_id)` without
-/// reading any transcript content. `list_sessions` maps these through
-/// `session_from_file`; `find_session` uses them to narrow to the one file
-/// whose name matches before paying for a full parse.
+/// Enumerate every session file as `(path, engine, profile_id, home)`
+/// without reading any transcript content. `list_sessions` maps these
+/// through `session_from_file`; `find_session` uses them to narrow to the
+/// one file whose name matches before paying for a full parse. `home` is
+/// the pool-root subdir that actually holds the transcript — resuming a
+/// session must launch the CLI inside THAT dir, not the profile's current
+/// home.
 ///
 /// Since 0.4.10 the home dir is named with the profile's COMPACT token, not
 /// its id, so dir names are resolved back to ids via the profile list (a
@@ -139,8 +153,10 @@ pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
 /// `runtime/` leftovers a still-running session keeps from migrating. A
 /// file present in two roots (same profile, engine and name) is listed
 /// once, with the active root's copy winning.
-pub(crate) fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, String)>> {
-    let mut out: Vec<(PathBuf, Engine, String)> = Vec::new();
+pub(crate) fn session_file_entries(
+    store: &ProfileStore,
+) -> Result<Vec<(PathBuf, Engine, String, PathBuf)>> {
+    let mut out: Vec<(PathBuf, Engine, String, PathBuf)> = Vec::new();
     let _ = store.ensure_runtime_root();
     let mut id_by_dir_name: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
@@ -173,7 +189,7 @@ pub(crate) fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf,
                 // The same transcript can sit in the active root and in a
                 // legacy leftover root; list it once, active root first.
                 if seen.insert((profile_id.clone(), engine_key(engine), stem)) {
-                    out.push((path, engine, profile_id.clone()));
+                    out.push((path, engine, profile_id.clone(), home_root.clone()));
                 }
             }
         }
@@ -203,8 +219,8 @@ fn home_session_files(home_root: &Path) -> Vec<(PathBuf, Engine, String)> {
 }
 
 /// Parse one transcript file into a `Session`, filling in the profile id,
-/// engine and file mtime. Returns `None` for an unparseable file.
-fn session_from_file(path: &Path, engine: Engine, profile_id: &str) -> Option<Session> {
+/// engine, home dir and file mtime. Returns `None` for an unparseable file.
+fn session_from_file(path: &Path, engine: Engine, profile_id: &str, home: &Path) -> Option<Session> {
     let session = match engine {
         Engine::Claude => parse_claude_session(path),
         Engine::Codex => parse_codex_session(path),
@@ -212,6 +228,7 @@ fn session_from_file(path: &Path, engine: Engine, profile_id: &str) -> Option<Se
     let mut s = session;
     s.profile_id = profile_id.to_string();
     s.engine = engine;
+    s.home = home.to_path_buf();
     s.modified = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .unwrap_or(SystemTime::UNIX_EPOCH);
@@ -583,6 +600,8 @@ fn parse_claude_session(path: &Path) -> Option<Session> {
         engine: Engine::Claude,
         cwd,
         preview,
+        // Filled in by `session_from_file`, which knows the home dir.
+        home: PathBuf::new(),
         modified: SystemTime::UNIX_EPOCH,
     })
 }
@@ -644,6 +663,8 @@ fn parse_codex_session(path: &Path) -> Option<Session> {
         engine: Engine::Codex,
         cwd,
         preview,
+        // Filled in by `session_from_file`, which knows the home dir.
+        home: PathBuf::new(),
         modified: SystemTime::UNIX_EPOCH,
     })
 }
@@ -919,6 +940,64 @@ mod tests {
         // The desktop's by-id enrichment keys off profile_id — it must be
         // the real id, not the dir token.
         assert!(find_session(&store, "sess-1").unwrap().profile_id == id);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn session_home_is_the_pool_dir_that_holds_the_transcript() {
+        let root = temp_root();
+        let store = ProfileStore { root: root.clone() };
+        let id = "5c6479a1-b596-47fc-9525-12b0e6fd20b5";
+        let profile = crate::profile::Profile {
+            id: id.into(),
+            name: "UUID profile".into(),
+            description: String::new(),
+            provider: crate::profile::ProviderConfig {
+                provider_type: "openai-compatible".into(),
+                base_url: "http://127.0.0.1:8000/v1".into(),
+                api_key: Some("EMPTY".into()),
+                api_key_env: None,
+                auth_mode: None,
+            },
+            model: crate::profile::ModelConfig {
+                default: "m".into(),
+                effort: None,
+                context_window: None,
+                models: Vec::new(),
+            },
+            codex: crate::profile::CodexConfig {
+                provider_name: id.into(),
+            },
+            cli: String::new(),
+        };
+        store.save(&profile, None).unwrap();
+        let compact = crate::runtime::compact_home_name(id);
+        seed_claude_session(&store, &compact, "sess-1");
+        // A full-id home (0.4.9 layout) migrates into the compact one on
+        // the scan — the reported home is where the transcript NOW lives.
+        seed_claude_session(&store, id, "sess-2");
+        // An orphan home (profile deleted) keeps its name.
+        seed_claude_session(&store, "orphan-home", "sess-3");
+
+        let sessions = list_sessions(&store).unwrap();
+        assert_eq!(sessions.len(), 3);
+        let by_id: std::collections::HashMap<&str, &Path> = sessions
+            .iter()
+            .map(|s| (s.session_id.as_str(), s.home.as_path()))
+            .collect();
+        let rt = store.runtime_dir();
+        assert_eq!(by_id.get("sess-1").copied(), Some(rt.join(&compact).as_path()));
+        assert_eq!(by_id.get("sess-2").copied(), Some(rt.join(&compact).as_path()));
+        assert_eq!(by_id.get("sess-3").copied(), Some(rt.join("orphan-home").as_path()));
+        // The home is the pool dir itself — resuming must launch the CLI
+        // inside it, and the engine dir is right there.
+        for s in &sessions {
+            assert!(
+                s.home.join(".claude").is_dir(),
+                "home must contain the engine dir: {:?}",
+                s.home
+            );
+        }
         let _ = std::fs::remove_dir_all(&root);
     }
 

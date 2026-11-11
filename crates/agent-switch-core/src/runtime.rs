@@ -265,13 +265,59 @@ fn create_dir_junction(path: &Path, target: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Get (creating if needed) the profile's persistent isolated home. Codex's
-/// generated `config.toml` is rewritten from the profile on every call so
-/// the profile stays the single source of routing truth; the `[projects]`
-/// trust table Codex writes into that file is carried over (and the launch
-/// `workspace` is marked trusted — see `codex::with_project_trust`).
-/// Claude needs no config file — its base URL, model and key travel as
-/// per-process environment variables at launch (spec §9).
+/// Prepare ONE isolated home dir for a launch. Codex's generated
+/// `config.toml` is rewritten from the profile on every call so the profile
+/// stays the single source of routing truth; the `[projects]` trust table
+/// Codex writes into that file is carried over (and the launch `workspace`
+/// is marked trusted — see `codex::with_project_trust`), and so is the
+/// user's TUI model-effort choice
+/// (`codex::with_model_reasoning_effort`). Claude needs no config file — its
+/// base URL, model and key travel as per-process environment variables at
+/// launch (spec §9).
+///
+/// Unlike `create_runtime`, the dir is NOT derived from the profile's
+/// current compact home — callers may pass a different home (a 0.4.9
+/// `runtime/` leftover dir, or a pre-0.4.10 as-is dir name) when resuming a
+/// session whose transcript lives there, so the CLI finds the conversation.
+pub fn prepare_home_for_launch(
+    dir: &Path,
+    engine: Engine,
+    profile: &Profile,
+    workspace: &Path,
+) -> Result<Runtime> {
+    let home = dir.join(engine.home_dir_name());
+    fs::create_dir_all(&home)?;
+    if matches!(engine, Engine::Codex) {
+        // A home moved by an older version (or by hand) may carry a
+        // dangling daemon link even though nothing moves this launch.
+        repair_codex_daemon_link(dir);
+        // The model catalog gives the profile model real metadata (context
+        // window, no reasoning params) and replaces the built-in OpenAI
+        // model list — see codex::render_model_catalog.
+        let catalog_path = home.join("model-catalog.json");
+        let config_path = home.join("config.toml");
+        let existing = fs::read_to_string(&config_path).ok();
+        let config = crate::codex::generate_codex_config(profile, &catalog_path);
+        let config = crate::codex::with_project_trust(config, existing.as_deref(), workspace);
+        // The user's TUI effort choice survives the rewrite (see the
+        // helper).
+        let config = crate::codex::with_model_reasoning_effort(config, existing.as_deref());
+        fs::write(&config_path, config)?;
+        fs::write(&catalog_path, crate::codex::render_model_catalog(profile))?;
+    } else {
+        // Base pre-seed (theme + onboarding); the launch paths re-seed with
+        // the workspace for the per-project trust entry. Best effort: a
+        // seeding failure must not block the launch.
+        let _ = seed_claude_home(&home, None);
+    }
+    Ok(Runtime {
+        dir: dir.to_path_buf(),
+        engine,
+        home,
+    })
+}
+
+/// Get (creating if needed) the profile's persistent isolated home.
 pub fn create_runtime(
     store: &ProfileStore,
     profile: &Profile,
@@ -282,29 +328,7 @@ pub fn create_runtime(
     let runtime_dir = store.runtime_dir();
     migrate_legacy_profile_dir(&runtime_dir, &profile.id);
     let dir = runtime_dir.join(compact_home_name(&profile.id));
-    let home = dir.join(engine.home_dir_name());
-    fs::create_dir_all(&home)?;
-    if matches!(engine, Engine::Codex) {
-        // A home moved by an older version (or by hand) may carry a
-        // dangling daemon link even though nothing moves this launch.
-        repair_codex_daemon_link(&dir);
-        // The model catalog gives the profile model real metadata (context
-        // window, no reasoning params) and replaces the built-in OpenAI
-        // model list — see codex::render_model_catalog.
-        let catalog_path = home.join("model-catalog.json");
-        let config_path = home.join("config.toml");
-        let existing = fs::read_to_string(&config_path).ok();
-        let config = crate::codex::generate_codex_config(profile, &catalog_path);
-        let config = crate::codex::with_project_trust(config, existing.as_deref(), workspace);
-        fs::write(&config_path, config)?;
-        fs::write(&catalog_path, crate::codex::render_model_catalog(profile))?;
-    } else {
-        // Base pre-seed (theme + onboarding); the launch paths re-seed with
-        // the workspace for the per-project trust entry. Best effort: a
-        // seeding failure must not block the launch.
-        let _ = seed_claude_home(&home, None);
-    }
-    Ok(Runtime { dir, engine, home })
+    prepare_home_for_launch(&dir, engine, profile, workspace)
 }
 
 /// Pre-seed a Claude config home so the FIRST launch in a fresh isolated
@@ -463,6 +487,65 @@ mod tests {
         {
             File::open(path)
         }
+    }
+
+    #[test]
+    fn prepare_home_for_launch_preps_any_dir_for_codex() {
+        let dir = std::env::temp_dir().join(format!(
+            "as-prep-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let ws = dir.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let profile = Profile {
+            id: "gpt".into(),
+            name: "GPT".into(),
+            description: String::new(),
+            provider: crate::profile::ProviderConfig {
+                provider_type: "openai-compatible".into(),
+                base_url: "https://example.com/v1".into(),
+                api_key: Some("EMPTY".into()),
+                api_key_env: None,
+                auth_mode: None,
+            },
+            model: crate::profile::ModelConfig {
+                default: "m".into(),
+                effort: None,
+                context_window: None,
+                models: Vec::new(),
+            },
+            codex: crate::profile::CodexConfig {
+                provider_name: "gpt".into(),
+            },
+            cli: "codex".into(),
+        };
+        // A home dir that is NOT the profile's current one (a 0.4.9
+        // leftover) — the resume path prepares it instead.
+        let legacy = dir.join("legacy-home");
+        // A pre-existing effort choice must survive the regeneration.
+        std::fs::create_dir_all(legacy.join(".codex")).unwrap();
+        std::fs::write(
+            legacy.join(".codex").join("config.toml"),
+            "model_reasoning_effort = \"medium\"\n[model_providers.gpt]\nbase_url = \"http://stale.example/v1\"\n",
+        )
+        .unwrap();
+
+        let rt = prepare_home_for_launch(&legacy, Engine::Codex, &profile, &ws).unwrap();
+        assert_eq!(rt.dir, legacy);
+        assert_eq!(rt.home, legacy.join(".codex"));
+        let config = std::fs::read_to_string(rt.home.join("config.toml")).unwrap();
+        assert!(
+            config.contains("model_providers.gpt"),
+            "config must be regenerated in the legacy home: {config}"
+        );
+        assert!(config.contains("https://example.com/v1"));
+        assert!(
+            config.contains("model_reasoning_effort = \"medium\""),
+            "the user's effort choice must survive the rewrite: {config}"
+        );
+        assert!(rt.home.join("model-catalog.json").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
