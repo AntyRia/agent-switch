@@ -886,14 +886,17 @@ mod tests {
         let other = store.runtime_dir().join("orphan-home");
         std::fs::create_dir_all(other.join(".claude")).unwrap();
 
-        let launch = prepare_terminal_launch_with_home(
+        // The private impl (not the public wrapper): the home-override
+        // logic is what this test covers, and `ensure_ready` would need an
+        // installed CLI, which CI runners do not have.
+        let launch = prepare_terminal_launch_impl(
             &store,
             &p,
             &Settings::default(),
             &dir,
             &["--resume".to_string(), "sess".to_string()],
             "resume-sess",
-            &other,
+            Some(&other),
         )
         .unwrap();
         // Launched inside the override home, not the profile's current one.
@@ -922,14 +925,14 @@ mod tests {
         let current = store.runtime_dir().join("t"); // profile id "t"
         std::fs::create_dir_all(&current).unwrap();
 
-        let launch = prepare_terminal_launch_with_home(
+        let launch = prepare_terminal_launch_impl(
             &store,
             &p,
             &Settings::default(),
             &dir,
             &["--resume".to_string(), "sess".to_string()],
             "resume-sess",
-            &current,
+            Some(&current),
         )
         .unwrap();
         assert_eq!(launch.runtime.dir, current);
@@ -950,14 +953,14 @@ mod tests {
         // transcript now lives in the current home, so launch there.
         let gone = store.runtime_dir().join("moved-away");
 
-        let launch = prepare_terminal_launch_with_home(
+        let launch = prepare_terminal_launch_impl(
             &store,
             &p,
             &Settings::default(),
             &dir,
             &["--resume".to_string(), "sess".to_string()],
             "resume-sess",
-            &gone,
+            Some(&gone),
         )
         .unwrap();
         assert_eq!(launch.runtime.dir, store.runtime_dir().join("t"));
