@@ -1083,6 +1083,157 @@ input[readonly] {
   color: var(--text);
 }
 
+/* One user-modifiable item: label + field(s) + its own save button. */
+.settings-item {
+  border-top: 1px solid var(--border);
+  padding: 14px 0;
+}
+
+.settings-section > .settings-item:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.settings-item-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+/* Label row with a trailing status chip. */
+.field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* Status chips: at-a-glance state of an item. */
+.status-chip {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  color: var(--muted);
+  background: var(--bg);
+}
+
+.status-chip.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 8%, var(--panel));
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--border));
+}
+
+.status-chip.warn {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
+.status-chip.err {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--panel));
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+
+/* Non-edit state of a settings field: flat, dashed, muted — the field
+   is there, but it is not the thing you are editing. */
+.field-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: text;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.field-display:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.field-display .field-display-value {
+  flex: 1;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.field-display .field-display-value em {
+  font-style: normal;
+  opacity: 0.55;
+}
+
+.field-display .edit-icon {
+  font-size: 12px;
+  opacity: 0.4;
+  flex-shrink: 0;
+}
+
+.field-display:hover .edit-icon {
+  opacity: 1;
+}
+
+/* Edit state: the field is clearly "on" — accent border + soft glow. */
+input.editing {
+  border: 1.5px solid var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Session pool: the current location line + the migration report. */
+.pool-current {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.pool-current-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pool-path {
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  max-width: 100%;
+}
+
+.migrate-report {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--ok) 7%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, var(--border));
+  color: var(--text);
+}
+
+.migrate-report.err {
+  background: color-mix(in srgb, var(--warn-text) 7%, var(--panel));
+  border-color: var(--warn-border);
+}
+
 .check-row {
   display: flex;
   align-items: center;

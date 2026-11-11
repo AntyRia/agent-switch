@@ -34,6 +34,10 @@ pub struct Settings {
     /// Absolute path of the terminal to open the CLI in. Empty = auto-detect
     /// the first available terminal on this machine.
     pub terminal: String,
+    /// Root of the session pool (the per-profile isolated homes). Empty =
+    /// the default `<config_root>/rt`. Setting a new value makes the GUI
+    /// stop the running agent-switch sessions and move every home there.
+    pub pool_dir: String,
 }
 
 impl Default for Settings {
@@ -43,6 +47,7 @@ impl Default for Settings {
             proxy_host: String::new(),
             proxy_port: 0,
             terminal: String::new(),
+            pool_dir: String::new(),
         }
     }
 }

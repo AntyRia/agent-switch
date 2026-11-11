@@ -134,13 +134,14 @@ pub fn find_session(store: &ProfileStore, session_id: &str) -> Result<Session> {
 /// Since 0.4.10 the home dir is named with the profile's COMPACT token, not
 /// its id, so dir names are resolved back to ids via the profile list (a
 /// legacy full-id dir, or an unknown dir, falls back to the dir name).
+///
+/// Every pool root is scanned — the active root first, then the 0.4.9
+/// `runtime/` leftovers a still-running session keeps from migrating. A
+/// file present in two roots (same profile, engine and name) is listed
+/// once, with the active root's copy winning.
 pub(crate) fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf, Engine, String)>> {
-    let mut out = Vec::new();
+    let mut out: Vec<(PathBuf, Engine, String)> = Vec::new();
     let _ = store.ensure_runtime_root();
-    let root = store.runtime_dir();
-    if !root.is_dir() {
-        return Ok(out);
-    }
     let mut id_by_dir_name: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     if let Ok(profiles) = store.list() {
@@ -149,33 +150,56 @@ pub(crate) fn session_file_entries(store: &ProfileStore) -> Result<Vec<(PathBuf,
             id_by_dir_name.insert(crate::runtime::compact_home_name(&p.id), p.id);
         }
     }
-    for entry in std::fs::read_dir(&root)?.flatten() {
-        let home_root = entry.path();
-        if !home_root.is_dir() {
+    let engine_key = |e: Engine| if e == Engine::Claude { 0u8 } else { 1u8 };
+    let mut seen: std::collections::HashSet<(String, u8, String)> =
+        std::collections::HashSet::new();
+    for root in store.pool_roots() {
+        if !root.is_dir() {
             continue;
         }
-        let Some(dir_name) = home_root.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        let profile_id = id_by_dir_name
-            .get(dir_name)
-            .cloned()
-            .unwrap_or_else(|| dir_name.to_string());
-        for engine in [Engine::Claude, Engine::Codex] {
-            let home = home_root.join(engine.home_dir_name());
-            if !home.is_dir() {
+        for entry in std::fs::read_dir(&root)?.flatten() {
+            let home_root = entry.path();
+            if !home_root.is_dir() {
                 continue;
             }
-            let files = match engine {
-                Engine::Claude => session_files_claude(&home),
-                Engine::Codex => session_files_codex(&home),
+            let Some(dir_name) = home_root.file_name().and_then(|n| n.to_str()) else {
+                continue;
             };
-            for path in files {
-                out.push((path, engine, profile_id.clone()));
+            let profile_id = id_by_dir_name
+                .get(dir_name)
+                .cloned()
+                .unwrap_or_else(|| dir_name.to_string());
+            for (path, engine, stem) in home_session_files(&home_root) {
+                // The same transcript can sit in the active root and in a
+                // legacy leftover root; list it once, active root first.
+                if seen.insert((profile_id.clone(), engine_key(engine), stem)) {
+                    out.push((path, engine, profile_id.clone()));
+                }
             }
         }
     }
     Ok(out)
+}
+
+/// `(path, engine, file stem)` for every session file inside one home dir
+/// (a per-profile isolated home, whatever pool root it lives in).
+fn home_session_files(home_root: &Path) -> Vec<(PathBuf, Engine, String)> {
+    let mut out = Vec::new();
+    for engine in [Engine::Claude, Engine::Codex] {
+        let home = home_root.join(engine.home_dir_name());
+        if !home.is_dir() {
+            continue;
+        }
+        let files = match engine {
+            Engine::Claude => session_files_claude(&home),
+            Engine::Codex => session_files_codex(&home),
+        };
+        for path in files {
+            let stem = file_stem(&path);
+            out.push((path, engine, stem));
+        }
+    }
+    out
 }
 
 /// Parse one transcript file into a `Session`, filling in the profile id,
@@ -323,8 +347,8 @@ fn resume_arguments_for(
 }
 
 /// Delete a session's transcript file(s) from the profile homes and drop
-/// its meta entries. Only files under `rt/` whose name matches the
-/// session id are ever removed; returns how many files were deleted.
+/// its meta entries. Only files under the pool roots whose name matches
+/// the session id are ever removed; returns how many files were deleted.
 pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
     if session_is_open(store, session_id) {
         return Err(Error::Other(
@@ -332,9 +356,11 @@ pub fn delete_session(store: &ProfileStore, session_id: &str) -> Result<usize> {
         ));
     }
     let _ = store.ensure_runtime_root();
-    let root = store.runtime_dir();
     let mut removed = 0usize;
-    if root.is_dir() {
+    for root in store.pool_roots() {
+        if !root.is_dir() {
+            continue;
+        }
         for entry in std::fs::read_dir(&root)?.flatten() {
             let home_root = entry.path();
             if !home_root.is_dir() {
@@ -399,10 +425,12 @@ pub fn clear_unpinned_sessions(store: &ProfileStore) -> Result<usize> {
     let keep: std::collections::HashSet<&str> = meta.pinned.iter().map(|s| s.as_str()).collect();
 
     let _ = store.ensure_runtime_root();
-    let root = store.runtime_dir();
     let mut removed: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut failed = 0usize;
-    if root.is_dir() {
+    for root in store.pool_roots() {
+        if !root.is_dir() {
+            continue;
+        }
         for entry in std::fs::read_dir(&root)?.flatten() {
             let home_root = entry.path();
             if !home_root.is_dir() {

@@ -283,6 +283,8 @@ pub struct SettingsOut {
     pub proxy_port: u16,
     /// Pinned terminal path ("" = auto-detect).
     pub terminal: String,
+    /// Session pool root ("" = the default `<config_root>/rt`).
+    pub pool_dir: String,
     /// Where the settings file lives (shown in the UI footer).
     pub path: String,
 }
@@ -296,6 +298,8 @@ pub struct SettingsIn {
     pub proxy_port: u16,
     #[serde(default)]
     pub terminal: String,
+    #[serde(default)]
+    pub pool_dir: String,
 }
 
 /// One terminal the launcher knows how to open.
@@ -838,6 +842,7 @@ pub async fn get_settings() -> Result<SettingsOut, String> {
         proxy_host: s.proxy_host,
         proxy_port: s.proxy_port,
         terminal: s.terminal,
+        pool_dir: s.pool_dir,
     })
 }
 
@@ -849,10 +854,11 @@ pub async fn save_settings(s: SettingsIn) -> Result<(), String> {
         proxy_host: s.proxy_host.trim().to_string(),
         proxy_port: s.proxy_port,
         terminal: s.terminal.trim().to_string(),
+        pool_dir: s.pool_dir.trim().to_string(),
     };
     settings.save().map_err(|e| e.to_string())?;
     logging::info(&format!(
-        "settings updated: dangerous_mode={}, proxy={}, terminal={}",
+        "settings updated: dangerous_mode={}, proxy={}, terminal={}, pool_dir={}",
         settings.dangerous_mode,
         settings.proxy_url().unwrap_or_else(|| "disabled".into()),
         if settings.terminal.is_empty() {
@@ -860,8 +866,163 @@ pub async fn save_settings(s: SettingsIn) -> Result<(), String> {
         } else {
             settings.terminal.clone()
         },
+        if settings.pool_dir.is_empty() { "default".to_string() } else { settings.pool_dir.clone() },
     ));
     Ok(())
+}
+
+/// One open session a pool migration will stop (shown in the confirm
+/// dialog before the user commits to the new path).
+#[derive(Debug, Clone, Serialize)]
+pub struct OpenSessionOut {
+    pub session_id: String,
+    pub activity: String,
+}
+
+/// Where the session pool lives right now and what is in it: the status
+/// chips on the settings page read this (pool entries, total sessions,
+/// leftovers in the 0.4.9 `runtime/` dir, open sessions).
+#[derive(Debug, Clone, Serialize)]
+pub struct PoolStatusOut {
+    /// The default pool root (`<config_root>/rt`).
+    pub default_dir: String,
+    /// The configured pool root (default when `pool_dir` is empty).
+    pub current_dir: String,
+    /// True when the user picked a non-default pool path.
+    pub custom: bool,
+    /// The current root exists on disk.
+    pub exists: bool,
+    /// Profile homes in the current root.
+    pub entries: u64,
+    /// Total sessions found in every pool root.
+    pub sessions: u64,
+    /// Homes still left in the 0.4.9 `runtime/` directory.
+    pub legacy_entries: u64,
+    /// Sessions still open (running/starting/background/unknown).
+    pub open_sessions: Vec<OpenSessionOut>,
+}
+
+/// Session pool status for the settings page.
+#[tauri::command]
+pub async fn get_pool_status() -> Result<PoolStatusOut, String> {
+    let store = ProfileStore::new();
+    let count_dirs = |dir: &std::path::Path| -> u64 {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .count() as u64
+    };
+    let current = store.runtime_dir();
+    let legacy = store.root.join("runtime");
+    let legacy_is_other = legacy.is_dir()
+        && std::fs::canonicalize(&legacy).ok()
+            != std::fs::canonicalize(&current).ok();
+    Ok(PoolStatusOut {
+        default_dir: store.default_runtime_dir().display().to_string(),
+        current_dir: current.display().to_string(),
+        custom: !store.settings().pool_dir.trim().is_empty(),
+        exists: current.is_dir(),
+        entries: if current.is_dir() { count_dirs(&current) } else { 0 },
+        sessions: agent_switch_core::sessions::list_sessions(&store)
+            .map(|pool| pool.len() as u64)
+            .unwrap_or(0),
+        legacy_entries: if legacy_is_other { count_dirs(&legacy) } else { 0 },
+        open_sessions: {
+            let activity = agent_switch_core::sessions::session_activities(&store);
+            let mut open: Vec<OpenSessionOut> = activity
+                .open_ids()
+                .into_iter()
+                .map(|id| OpenSessionOut {
+                    activity: activity.get(&id).label().to_string(),
+                    session_id: id,
+                })
+                .collect();
+            open.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+            open
+        },
+    })
+}
+
+/// Move the session pool to `path`: persist the new pool path, stop every
+/// open agent-switch session (agents + their terminal hosts + daemons
+/// holding the homes), then move every home into the new root. The report
+/// lists what moved, what was stopped and what failed.
+#[tauri::command]
+pub async fn migrate_pool_to(path: String) -> Result<agent_switch_core::pool::PoolMigration, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = ProfileStore::new();
+        let to = path.trim().to_string();
+        if to.is_empty() {
+            return Err("pool path is empty".into());
+        }
+        // Remember the old primary root (a previous custom pool dir, or the
+        // default `rt`): after the settings are saved it is no longer a
+        // pool root, so pass it along for the migration.
+        let previous_pool_dir = Settings::load().pool_dir.trim().to_string();
+        let mut settings = Settings::load();
+        // The default root is addressed as "" (the status chips read that).
+        settings.pool_dir = if to.eq_ignore_ascii_case(
+            &store.default_runtime_dir().to_string_lossy(),
+        ) {
+            String::new()
+        } else {
+            to.clone()
+        };
+        settings.save().map_err(|e| e.to_string())?;
+
+        let mut extra: Vec<std::path::PathBuf> = Vec::new();
+        if !previous_pool_dir.is_empty() {
+            extra.push(std::path::PathBuf::from(previous_pool_dir));
+        }
+        extra.push(store.default_runtime_dir());
+
+        // Every source root, canonicalized and de-duplicated.
+        let mut all: Vec<std::path::PathBuf> = store.pool_roots();
+        all.extend(extra.clone());
+        let mut sources: Vec<std::path::PathBuf> = Vec::new();
+        for root in all {
+            if let Ok(c) = std::fs::canonicalize(&root) {
+                if !sources.contains(&c) {
+                    sources.push(c);
+                }
+            }
+        }
+        let homes: Vec<std::path::PathBuf> = sources
+            .iter()
+            .flat_map(|r| std::fs::read_dir(r).into_iter().flatten().filter_map(|e| e.ok()).map(|e| e.path()))
+            .filter(|p| p.is_dir())
+            .collect();
+
+        let stopped = agent_switch_core::pool::stop_pool_sessions(&store, &homes);
+        let stopped_count = stopped.iter().map(|s| s.processes.len()).sum::<usize>();
+        // Give the OS a moment to release handles before the move starts.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let mut result =
+            agent_switch_core::pool::migrate_pool_homes(&store, std::path::Path::new(&to), &extra)
+                .map_err(|e| e.to_string())?;
+        result.stopped = stopped;
+        logging::info(&format!(
+            "pool migrated from {} to {}: {} home(s) moved, {} process(es) stopped, {} failure(s)",
+            result.from,
+            result.to,
+            result.moved.len(),
+            stopped_count,
+            result.failures.len()
+        ));
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Whether a path is an existing directory (settings page: the terminal
+/// and pool-path fields validate before saving).
+#[tauri::command]
+pub async fn path_exists(path: String) -> bool {
+    std::path::Path::new(path.trim()).is_dir()
 }
 
 /// Tail of the log file (same file the CLI `logs` command shows).

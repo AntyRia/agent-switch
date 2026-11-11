@@ -57,14 +57,59 @@ impl ProfileStore {
 
     /// Root of the per-profile isolated homes.
     ///
-    /// Renamed `runtime` → `rt` in 0.4.10: Codex's background app-server
-    /// daemon (≥ v0.166) binds an AF_UNIX socket inside `CODEX_HOME`, and
-    /// Windows only accepts socket paths < 108 bytes (`SUN_LEN`). The 0.4.9
-    /// layout (`runtime/<36-char-uuid>/.codex/...`) pushed the socket path
-    /// past that limit, so the daemon failed to start. Every byte saved in
-    /// the root widens the budget — see `runtime::compact_home_name`.
+    /// Honours the user's pool path: `Settings.pool_dir` when set (any
+    /// directory on this machine), else the default `<root>/rt`.
+    ///
+    /// The default name `rt` was chosen in 0.4.10 (from `runtime`): Codex's
+    /// background app-server daemon (≥ v0.166) binds an AF_UNIX socket
+    /// inside `CODEX_HOME`, and Windows only accepts socket paths < 108
+    /// bytes (`SUN_LEN`). The 0.4.9 layout (`runtime/<36-char-uuid>/.codex/
+    /// ...`) pushed the socket path past that limit, so the daemon failed
+    /// to start. Every byte saved in the root widens the budget — see
+    /// `runtime::compact_home_name`.
     pub fn runtime_dir(&self) -> PathBuf {
+        let custom = self.settings().pool_dir.trim().to_string();
+        if custom.is_empty() {
+            self.root.join("rt")
+        } else {
+            PathBuf::from(custom)
+        }
+    }
+
+    /// The default pool root (`<root>/rt`).
+    pub fn default_runtime_dir(&self) -> PathBuf {
         self.root.join("rt")
+    }
+
+    /// The settings file under this store's root — the same file
+    /// `Settings::path()` addresses when the store root is the real config
+    /// root (a temp-rooted test store simply has no settings file).
+    pub fn settings(&self) -> crate::settings::Settings {
+        std::fs::read_to_string(self.root.join("settings.toml"))
+            .ok()
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Every root that may hold per-profile homes, active root first: the
+    /// configured/default pool dir plus the 0.4.9 `runtime/` directory
+    /// while it still carries entries that could not be migrated (a home a
+    /// still-running session holds cannot be renamed on Windows).
+    pub fn pool_roots(&self) -> Vec<PathBuf> {
+        let primary = self.runtime_dir();
+        let mut roots = vec![primary.clone()];
+        let legacy = self.root.join("runtime");
+        if legacy.is_dir() {
+            let dup = primary == legacy
+                || std::fs::canonicalize(&legacy)
+                    .ok()
+                    .zip(std::fs::canonicalize(&primary).ok())
+                    .is_some_and(|(a, b)| a == b);
+            if !dup {
+                roots.push(legacy);
+            }
+        }
+        roots
     }
 
     /// Ensure `rt/` exists; on first use, migrate a 0.4.9 install's
@@ -420,6 +465,26 @@ mod tests {
         assert!(store.runtime_dir().join("free").is_dir(), "unlocked entry migrates");
         assert!(locked.exists(), "locked entry stays for a later attempt");
         assert!(dir.join("runtime").exists(), "legacy root kept while entries remain");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pool_roots_add_the_legacy_runtime_dir_and_honour_pool_dir() {
+        let (store, dir) = temp_store();
+        fs::create_dir_all(dir.join("runtime")).unwrap();
+        assert_eq!(
+            store.pool_roots(),
+            vec![dir.join("rt"), dir.join("runtime")]
+        );
+        // A configured pool path becomes the primary root; the legacy dir
+        // (still holding entries a running session kept locked) is still
+        // reported, so its sessions stay visible.
+        fs::write(dir.join("settings.toml"), "pool_dir = \"D:\\\\pool\"\n").unwrap();
+        assert_eq!(
+            store.pool_roots(),
+            vec![PathBuf::from("D:\\pool"), dir.join("runtime")]
+        );
+        assert_eq!(store.default_runtime_dir(), dir.join("rt"));
         let _ = fs::remove_dir_all(&dir);
     }
 

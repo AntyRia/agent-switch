@@ -173,61 +173,70 @@ fn inspect(store: &ProfileStore, snapshot: Snapshot) -> SessionActivities {
         }
     }
     // Read only session ownership metadata. Never read job providerEnv or keys.
+    // Every pool root is scanned: a home left in the 0.4.9 `runtime/` dir
+    // still owns its running session.
     let _ = store.ensure_runtime_root(); // migrate a 0.4.9 `runtime/` root once
-    if let Ok(profiles) = std::fs::read_dir(store.runtime_dir()) {
-        for profile in profiles.flatten() {
-            let Ok(records) = std::fs::read_dir(profile.path().join(".claude/sessions")) else {
-                continue;
-            };
-            for record in records.flatten() {
-                if record.path().extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                let Some(value) = std::fs::read_to_string(record.path())
-                    .ok()
-                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+    for root in store.pool_roots() {
+        if let Ok(profiles) = std::fs::read_dir(&root) {
+            for profile in profiles.flatten() {
+                let Ok(records) = std::fs::read_dir(profile.path().join(".claude/sessions"))
                 else {
                     continue;
                 };
-                let Some(id) = value["sessionId"].as_str().filter(|id| valid_id(id)) else {
-                    continue;
-                };
-                let Some(pid) = value["pid"].as_u64().and_then(|p| u32::try_from(p).ok()) else {
-                    continue;
-                };
-                let Some(process) = snapshot
-                    .processes
-                    .iter()
-                    .find(|p| p.pid == pid && session_process::is_agent(&p.name))
-                else {
-                    continue;
-                };
-                let claimed = session_process::claimed_sessions(process);
-                if !claimed.is_empty() && !claimed.iter().any(|claimed| claimed == id) {
-                    continue;
-                }
-                let identity = match (value["procStart"].as_str(), process.start.as_deref()) {
-                    (Some(recorded), Some(actual)) => recorded == actual,
-                    _ => claimed.iter().any(|claimed| claimed == id),
-                };
-                if !identity {
-                    if process.start.is_none() {
-                        states.entry(id.into()).or_insert(SessionActivity::Unknown);
+                for record in records.flatten() {
+                    if record.path().extension().and_then(|e| e.to_str()) != Some("json") {
+                        continue;
                     }
-                    continue;
+                    let Some(value) = std::fs::read_to_string(record.path())
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    else {
+                        continue;
+                    };
+                    let Some(id) = value["sessionId"].as_str().filter(|id| valid_id(id)) else {
+                        continue;
+                    };
+                    let Some(pid) = value["pid"].as_u64().and_then(|p| u32::try_from(p).ok())
+                    else {
+                        continue;
+                    };
+                    let Some(process) = snapshot
+                        .processes
+                        .iter()
+                        .find(|p| p.pid == pid && session_process::is_agent(&p.name))
+                    else {
+                        continue;
+                    };
+                    let claimed = session_process::claimed_sessions(process);
+                    if !claimed.is_empty() && !claimed.iter().any(|claimed| claimed == id) {
+                        continue;
+                    }
+                    let identity = match (
+                        value["procStart"].as_str(),
+                        process.start.as_deref(),
+                    ) {
+                        (Some(recorded), Some(actual)) => recorded == actual,
+                        _ => claimed.iter().any(|claimed| claimed == id),
+                    };
+                    if !identity {
+                        if process.start.is_none() {
+                            states.entry(id.into()).or_insert(SessionActivity::Unknown);
+                        }
+                        continue;
+                    }
+                    let background = matches!(value["kind"].as_str(), Some("bg" | "background"));
+                    let state = if background {
+                        let attach_id = value["jobId"]
+                            .as_str()
+                            .filter(|id| valid_id(id))
+                            .unwrap_or(id)
+                            .to_string();
+                        SessionActivity::Background { attach_id }
+                    } else {
+                        SessionActivity::Running
+                    };
+                    states.insert(id.to_string(), state);
                 }
-                let background = matches!(value["kind"].as_str(), Some("bg" | "background"));
-                let state = if background {
-                    let attach_id = value["jobId"]
-                        .as_str()
-                        .filter(|id| valid_id(id))
-                        .unwrap_or(id)
-                        .to_string();
-                    SessionActivity::Background { attach_id }
-                } else {
-                    SessionActivity::Running
-                };
-                states.insert(id.to_string(), state);
             }
         }
     }

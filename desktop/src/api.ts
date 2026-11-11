@@ -192,6 +192,8 @@ export interface SettingsData {
   proxy_port: number;
   /** Pinned terminal path ("" = auto-detect). */
   terminal: string;
+  /** Session pool root ("" = the default `<config_root>/rt`). */
+  pool_dir: string;
   /** Where the settings file lives (shown in the UI footer). */
   path: string;
 }
@@ -202,6 +204,47 @@ export interface SettingsDraft {
   proxy_host: string;
   proxy_port: number;
   terminal: string;
+  /** New pool root; "" keeps the default `<config_root>/rt`. */
+  pool_dir: string;
+}
+
+/** One session a pool migration would stop (confirm dialog). */
+export interface OpenSession {
+  session_id: string;
+  activity: string;
+}
+
+/** Session pool status (settings page). */
+export interface PoolStatus {
+  /** The default pool root (`<config_root>/rt`). */
+  default_dir: string;
+  /** The configured pool root. */
+  current_dir: string;
+  /** True when a non-default pool path is configured. */
+  custom: boolean;
+  /** The current root exists on disk. */
+  exists: boolean;
+  /** Profile homes in the current root. */
+  entries: number;
+  /** Total sessions across every pool root. */
+  sessions: number;
+  /** Homes still left in the 0.4.9 `runtime/` directory. */
+  legacy_entries: number;
+  /** Sessions still open (they will be stopped by a migration). */
+  open_sessions: OpenSession[];
+}
+
+/** Report of a completed pool migration. */
+export interface PoolMigrationResult {
+  from: string;
+  to: string;
+  moved: { name: string; from: string; to: string; how: string }[];
+  stopped: {
+    session_id: string;
+    activity: string;
+    processes: { pid: number; name: string }[];
+  }[];
+  failures: string[];
 }
 
 /** One terminal the launcher knows how to open (auto-detect order). */
@@ -294,6 +337,12 @@ export const api = {
   getStatus: (force?: boolean): Promise<Status> => invoke("get_status", { force }),
   getSettings: (): Promise<SettingsData> => invoke("get_settings"),
   saveSettings: (s: SettingsDraft): Promise<void> => invoke("save_settings", { s }),
+  // Session pool: status (path + contents) and migration to a new path
+  // (stops the open agent-switch sessions first, then moves the homes).
+  getPoolStatus: (): Promise<PoolStatus> => invoke("get_pool_status"),
+  migratePoolTo: (path: string): Promise<PoolMigrationResult> =>
+    invoke("migrate_pool_to", { path }),
+  pathExists: (path: string): Promise<boolean> => invoke("path_exists", { path }),
   getLogs: (lines?: number): Promise<LogsResult> => invoke("get_logs", { lines }),
   detectTerminals: (): Promise<TerminalInfo[]> => invoke("detect_terminals"),
   // Built-in updates: force=true bypasses the backend's 6 h check cache.

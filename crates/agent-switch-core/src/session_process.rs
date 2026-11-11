@@ -25,6 +25,50 @@ pub(crate) fn is_agent(name: &str) -> bool {
         || name.starts_with("codex.exe")
 }
 
+/// A process that can host an agent-switch CLI: the terminal (or the shell,
+/// conhost or WSL relay in front of it) the launcher opens the start
+/// scripts in. Used to find the hosts of sessions a pool migration must
+/// stop — their command lines carry the session id and the home path.
+pub(crate) fn is_terminal_host(name: &str) -> bool {
+    let name = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "powershell"
+            | "powershell.exe"
+            | "pwsh"
+            | "pwsh.exe"
+            | "cmd"
+            | "cmd.exe"
+            | "conhost"
+            | "conhost.exe"
+            | "openconsole"
+            | "openconsole.exe"
+            | "windowsterminal"
+            | "windowsterminal.exe"
+            | "wt"
+            | "wt.exe"
+            | "wslhost"
+            | "wslhost.exe"
+            | "wslrelay"
+            | "wslrelay.exe"
+            | "terminal"
+            | "terminal-bundle"
+            | "gnome-terminal-server"
+            | "konsole"
+            | "xterm"
+            | "bash"
+            | "bash.exe"
+            | "sh"
+            | "sh.exe"
+            | "zsh"
+            | "zsh.exe"
+    )
+}
+
 /// Preserve quoted paths and backslashes; only actual CLI argument values
 /// identify a session. A prompt mentioning an id is never an ownership claim.
 fn words(command: &str) -> Vec<String> {
@@ -86,8 +130,19 @@ pub(crate) fn claimed_sessions(process: &Process) -> Vec<String> {
     .unwrap_or_default()
 }
 
-#[cfg(windows)]
+/// Agent processes only (session ownership claims).
 pub(crate) fn snapshot() -> Snapshot {
+    snapshot_where(is_agent)
+}
+
+/// Agent + terminal host processes. The migration stop step needs the
+/// terminal hosts' command lines to find the hosts of a session.
+pub(crate) fn snapshot_all() -> Snapshot {
+    snapshot_where(|name| is_agent(name) || is_terminal_host(name))
+}
+
+#[cfg(windows)]
+fn snapshot_where(keep: impl Fn(&str) -> bool) -> Snapshot {
     use std::ffi::c_void;
     use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -136,7 +191,7 @@ pub(crate) fn snapshot() -> Snapshot {
                 .position(|ch| *ch == 0)
                 .unwrap_or(entry.szExeFile.len());
             let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-            if is_agent(&name) {
+            if keep(&name) {
                 let mut process = Process {
                     pid: entry.th32ProcessID,
                     name,
@@ -204,7 +259,7 @@ pub(crate) fn snapshot() -> Snapshot {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn snapshot() -> Snapshot {
+fn snapshot_where(keep: impl Fn(&str) -> bool) -> Snapshot {
     // macOS comm may contain a full executable path with spaces. ucomm is
     // the basename, keeping the first two columns unambiguous.
     #[cfg(target_os = "macos")]
@@ -232,7 +287,7 @@ pub(crate) fn snapshot() -> Snapshot {
             let mut fields = line.split_whitespace();
             let pid = fields.next()?.parse().ok()?;
             let name = fields.next()?.to_string();
-            if !is_agent(&name) {
+            if !keep(&name) {
                 return None;
             }
             #[cfg(target_os = "linux")]
@@ -256,6 +311,66 @@ pub(crate) fn snapshot() -> Snapshot {
     Snapshot {
         processes,
         complete: true,
+    }
+}
+
+/// Best-effort terminate (the pool migration stop step). Returns true when
+/// the process is gone afterwards; a process that survived is reported so
+/// the caller can retry — never an error.
+pub(crate) fn kill_process(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return true; // already gone
+            }
+            let killed = TerminateProcess(handle, 1) != 0;
+            CloseHandle(handle);
+            if !killed {
+                return false;
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    is_gone(pid)
+}
+
+fn is_gone(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return true;
+            }
+            CloseHandle(handle);
+            false
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        match std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+        {
+            Ok(status) => !status.success(),
+            Err(_) => true,
+        }
     }
 }
 

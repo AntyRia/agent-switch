@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.14] - 2026-11-11
+
+### Added
+
+- **Session pool migration** — the Settings page now shows where the
+  session pool lives (default location, entry/session counts, leftover
+  0.4.9 `runtime/` entries, open sessions) and lets you change the pool
+  path. Saving a new path stops every session launched by agent-switch
+  (the CLIs, the terminals hosting them and the daemons holding the
+  homes), then moves every profile home to the new folder — homes are
+  moved or merged, never copied-over, and Codex daemon junctions are
+  repaired in every moved home. The old `runtime/` leftovers and a
+  previous custom pool path are folded in too, so the pool is whole
+  afterwards.
+- **Settings redesign** — every user-modifiable item (dangerous mode,
+  proxy host/port, terminal, pool path) has its own 保存修改 button and a
+  status chip that states at a glance whether it is on/off, enabled and
+  where, or missing. Text fields have a clearly distinct non-edit state
+  (flat, dashed, muted — click to edit) and an edit state (accent border
+  and glow, Enter saves, Esc cancels) instead of always-editable inputs.
+
+### Fixed
+
+- **Sessions from the 0.4.9 `runtime/` directory were missing from the
+  pool**: the pool only enumerated the active `rt/` root, while a home a
+  still-running session held could not be renamed out of `runtime/` (see
+  0.4.12) and simply stayed there. Every pool read — the session list,
+  usage/export, delete/clear, and the session-ownership scan — now
+  enumerates all pool roots (active + legacy `runtime/`) and de-duplicates,
+  so sessions in a leftover root are visible, resumable and cleanable
+  again. The session-ownership scan covers the leftover roots too, so an
+  open session in a legacy home is still reported as open (and not
+  double-resumed).
+
 ## [0.4.13] - 2026-11-11
 
 ### Fixed
