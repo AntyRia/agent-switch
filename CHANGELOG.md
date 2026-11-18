@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.16] - 2026-11-18
+
+### Fixed
+
+- **A fresh Codex profile sent `reasoning.effort: "none"` and the relay
+  rejected it**: the generated model catalog advertises `none` as the
+  default level, but relays that only accept `low..max` (GPT-6.2 among
+  them) answer the first message with `unsupported_value`
+  (`reasoning.effort`), so a newly created profile could not run at all
+  until the user manually picked a strength in the TUI. A profile's
+  `[model] effort` now seeds `model_reasoning_effort` in the generated
+  `config.toml` (values outside the catalog ladder are dropped), so the
+  launch sends a level the server accepts and Codex's `/model` picker
+  starts on that strength.
+- **A pinned effort could have made Codex reject the whole config**:
+  carrying the TUI's picker choice over the every-launch rewrite always
+  inserted its own `model_reasoning_effort` line, so once a profile pins
+  an effort the file would have carried the key twice — a duplicate TOML
+  key, which makes Codex fail to load `config.toml`. The picker value now
+  replaces the profile default in place, and the file keeps exactly one
+  copy of the key.
+
 ## [0.4.15] - 2026-11-11
 
 ### Fixed

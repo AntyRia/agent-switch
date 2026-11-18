@@ -13,6 +13,22 @@ const STANDARD_BASE_INSTRUCTIONS: &str = include_str!("codex_prompt.txt");
 /// same window Codex falls back to for unknown models.
 const DEFAULT_CONTEXT_WINDOW: u32 = 272_000;
 
+/// Reasoning-effort values the generated model catalog advertises (and the
+/// only values a profile may pin through `[model] effort`).
+const EFFORT_LADDER: [&str; 7] = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
+
+/// The `model_reasoning_effort = "..."` line for a profile that pins an
+/// effort, or an empty string when it does not (or pins an unknown value).
+fn effort_config_line(effort: Option<&str>) -> String {
+    match effort.map(str::trim).filter(|e| EFFORT_LADDER.contains(e)) {
+        Some(e) => format!(
+            "model_reasoning_effort = {}\n",
+            toml::Value::String(e.to_string())
+        ),
+        None => String::new(),
+    }
+}
+
 /// Render the isolated Codex `config.toml` for a profile.
 /// The API key is NEVER written here — it is injected per process at launch.
 ///
@@ -28,6 +44,12 @@ const DEFAULT_CONTEXT_WINDOW: u32 = 272_000;
 /// launches from the GUI/CLI.
 pub fn generate_codex_config(p: &Profile, catalog_path: &Path) -> String {
     let q = |s: &str| toml::Value::String(s.to_string()).to_string();
+    // The generated catalog's default level is `none`, which some relays
+    // reject outright (GPT-6.2 accepts low..max only — the request fails
+    // with `reasoning.effort: none is not supported`). A profile-level
+    // `[model] effort` therefore seeds the config; the TUI picker's own
+    // choice still wins, see `with_model_reasoning_effort`.
+    let effort = effort_config_line(p.model.effort.as_deref());
     if p.is_official() {
         // Official (OpenAI) direct connection: use Codex's BUILT-IN
         // `openai` provider — no `model_provider` override, no
@@ -42,7 +64,7 @@ pub fn generate_codex_config(p: &Profile, catalog_path: &Path) -> String {
             ""
         };
         return format!(
-            "model = {}\nmodel_catalog_json = {}\n# The startup update check pops a blocking dialog whose DEFAULT action is\n# `npm install -g @openai/codex` — wrong for a profile-managed runtime.\ncheck_for_update_on_startup = false\n# Store `codex login` credentials in this isolated home (file), not the OS\n# keyring: a keyring entry is machine-wide and would leak across profiles.\ncli_auth_credentials_store = \"file\"\n\n[features]\nplugins = false\n{windows_section}",
+            "model = {}\n{effort}model_catalog_json = {}\n# The startup update check pops a blocking dialog whose DEFAULT action is\n# `npm install -g @openai/codex` — wrong for a profile-managed runtime.\ncheck_for_update_on_startup = false\n# Store `codex login` credentials in this isolated home (file), not the OS\n# keyring: a keyring entry is machine-wide and would leak across profiles.\ncli_auth_credentials_store = \"file\"\n\n[features]\nplugins = false\n{windows_section}",
             q(&p.model.default),
             q(catalog_path.to_string_lossy().as_ref()),
         );
@@ -56,7 +78,7 @@ pub fn generate_codex_config(p: &Profile, catalog_path: &Path) -> String {
         ""
     };
     format!(
-        "model = {}\nmodel_provider = {}\nmodel_catalog_json = {}\n# The startup update check pops a blocking dialog whose DEFAULT action is\n# `npm install -g @openai/codex` (upgrades the user's global install) —\n# wrong for a profile-managed runtime, where the user controls the Codex\n# install themselves. Version stays visible via `agent-switch doctor`.\ncheck_for_update_on_startup = false\n\n[features]\n# The curated-plugin sync (a 5k-file OpenAI GitHub repo, fetched at every\n# startup) is useless without a ChatGPT login and is a known flaky point\n# on restricted networks — disable it for third-party profiles.\nplugins = false\n\n[model_providers.{name}]\nname = {}\nbase_url = {}\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"responses\"\n{windows_section}",
+        "model = {}\n{effort}model_provider = {}\nmodel_catalog_json = {}\n# The startup update check pops a blocking dialog whose DEFAULT action is\n# `npm install -g @openai/codex` (upgrades the user's global install) —\n# wrong for a profile-managed runtime, where the user controls the Codex\n# install themselves. Version stays visible via `agent-switch doctor`.\ncheck_for_update_on_startup = false\n\n[features]\n# The curated-plugin sync (a 5k-file OpenAI GitHub repo, fetched at every\n# startup) is useless without a ChatGPT login and is a known flaky point\n# on restricted networks — disable it for third-party profiles.\nplugins = false\n\n[model_providers.{name}]\nname = {}\nbase_url = {}\nenv_key = \"OPENAI_API_KEY\"\nwire_api = \"responses\"\n{windows_section}",
         q(&p.model.default),
         q(name),
         q(catalog_path.to_string_lossy().as_ref()),
@@ -129,29 +151,43 @@ pub fn with_project_trust(config: String, existing: Option<&str>, workspace: &Pa
 /// catalog's ladder offers are carried — a stale or future key (e.g.
 /// `default`) is dropped so it can never make Codex fail to parse the
 /// config.
+///
+/// The picker choice REPLACES a profile-pinned default rather than being
+/// appended: two `model_reasoning_effort` keys in one TOML document would
+/// make Codex reject the whole file.
 pub fn with_model_reasoning_effort(config: String, existing: Option<&str>) -> String {
     let Some(value) = existing
         .and_then(|raw| raw.parse::<toml::Value>().ok())
-        .and_then(|doc| doc.get("model_reasoning_effort")?.as_str().map(str::to_string))
+        .and_then(|doc| {
+            doc.get("model_reasoning_effort")?
+                .as_str()
+                .map(str::to_string)
+        })
     else {
         return config;
     };
-    const LADDER: [&str; 7] = ["none", "low", "medium", "high", "xhigh", "max", "ultra"];
-    if !LADDER.contains(&value.as_str()) {
+    if !EFFORT_LADDER.contains(&value.as_str()) {
         return config;
     }
-    let line = format!("model_reasoning_effort = {}\n", toml::Value::String(value));
+    let line = format!("model_reasoning_effort = {}", toml::Value::String(value));
     // Top-level keys must precede the first [table] header.
     let mut out: Vec<String> = Vec::new();
-    let mut inserted = false;
+    let mut written = false;
     for l in config.lines() {
-        if !inserted && l.starts_with('[') {
+        if l.trim_start().starts_with("model_reasoning_effort") {
+            if !written {
+                out.push(line.clone());
+                written = true;
+            }
+            continue;
+        }
+        if !written && l.starts_with('[') {
             out.push(line.clone());
-            inserted = true;
+            written = true;
         }
         out.push(l.to_string());
     }
-    if !inserted {
+    if !written {
         out.push(line);
     }
     let mut s = out.join("\n");
@@ -470,7 +506,10 @@ trust_level = "trusted"
         assert!(cfg.contains("model_reasoning_effort = \"high\""));
         // The whole file still parses as TOML.
         let doc: toml::Value = cfg.parse().unwrap();
-        assert_eq!(doc["model_reasoning_effort"], toml::Value::String("high".into()));
+        assert_eq!(
+            doc["model_reasoning_effort"],
+            toml::Value::String("high".into())
+        );
     }
 
     #[test]
@@ -486,6 +525,48 @@ trust_level = "trusted"
         // A parseable existing config without the key: untouched.
         let cfg = with_model_reasoning_effort(cfg, Some("model = \"gpt-6.1-sol\"\n"));
         assert!(!cfg.contains("model_reasoning_effort"));
+    }
+
+    #[test]
+    fn profile_effort_pins_the_codex_config() {
+        // A profile that pins an effort must send it: the catalog default
+        // (`none`) is rejected by relays that only accept low..max, which
+        // made every fresh GPT-6.2 session fail with
+        // `reasoning.effort: none is not supported`.
+        let mut p = sample();
+        p.model.effort = Some("xhigh".into());
+        let cfg = generate_codex_config(&p, Path::new("/rt/x/model-catalog.json"));
+        let doc: toml::Value = cfg.parse().unwrap();
+        assert_eq!(
+            doc["model_reasoning_effort"],
+            toml::Value::String("xhigh".into())
+        );
+        // Top-level key, before the first [table].
+        let effort_line = cfg
+            .lines()
+            .position(|l| l.starts_with("model_reasoning_effort = "))
+            .unwrap();
+        let first_table = cfg.lines().position(|l| l.starts_with('[')).unwrap();
+        assert!(effort_line < first_table);
+        // Unknown values never reach the file.
+        p.model.effort = Some("default".into());
+        let cfg = generate_codex_config(&p, Path::new("/rt/x/model-catalog.json"));
+        assert!(!cfg.contains("model_reasoning_effort"));
+    }
+
+    #[test]
+    fn picker_choice_replaces_the_profile_effort() {
+        let mut p = sample();
+        p.model.effort = Some("xhigh".into());
+        let cfg = generate_codex_config(&p, Path::new("/rt/x/model-catalog.json"));
+        let cfg = with_model_reasoning_effort(cfg, Some("model_reasoning_effort = \"low\"\n"));
+        // Exactly one key — a duplicate would make Codex reject the file.
+        assert_eq!(cfg.matches("model_reasoning_effort = ").count(), 1);
+        let doc: toml::Value = cfg.parse().unwrap();
+        assert_eq!(
+            doc["model_reasoning_effort"],
+            toml::Value::String("low".into())
+        );
     }
 
     #[test]

@@ -45,9 +45,11 @@ pub struct ProviderConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelConfig {
     pub default: String,
-    /// Claude only: reasoning effort, injected as CLAUDE_CODE_EFFORT_LEVEL.
-    /// Set it when the server rejects the CLI's default (some vLLM builds
-    /// accept only e.g. xhigh/medium/low). Ignored by the codex engine.
+    /// Reasoning effort. Claude: injected as CLAUDE_CODE_EFFORT_LEVEL.
+    /// Codex: written as `model_reasoning_effort` into the generated
+    /// config (the catalog default is `none`, which some relays reject —
+    /// GPT-6.2 accepts low..max only). Set it when the server rejects the
+    /// CLI's default (some vLLM builds accept only e.g. xhigh/medium/low).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     /// Codex only: the model's context window in tokens. Written into the
