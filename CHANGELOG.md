@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.17] - 2026-11-20
+
+### Added
+
+- **Per-launch connection mode (direct vs proxy)** — previously the proxy
+  from Settings applied to every GUI launch and every pool resume, with no
+  way to run one session direct. The launch dialog now carries a
+  "Connection" switch (Direct / Proxy): Direct is the default and forces
+  all traffic out with no proxy environment; Proxy requires the proxy
+  configured in Settings — while none is configured the launch button is
+  held and an amber hint links straight to the Settings page. The session
+  pool got the same switch on every row (default Direct), and a row's
+  choice only affects the next resume of that session — it never changes
+  the global proxy setting. On the backend, `launch_profile` and
+  `resume_session` accept an optional `use_proxy`: absent keeps the old
+  follow-the-global-setting behaviour, `true` requires a configured proxy,
+  and `false` forces this run direct.
+
 ## [0.4.16] - 2026-11-18
 
 ### Fixed

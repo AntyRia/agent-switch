@@ -141,6 +141,17 @@ const EN = {
     "The {cli} CLI is unavailable or its installation is damaged. Check free disk space, install or repair it, then press Re-check.",
   launchStartedCodex: "Codex started in a new terminal window.",
   launchStartedClaude: "Claude started in a new terminal window.",
+  // Connection mode (launch modal + session pool)
+  fConnMode: "Connection",
+  connModeTip:
+    "Connection mode: direct, or via the proxy configured in Settings",
+  connDirect: "Direct",
+  connProxy: "Proxy",
+  connDirectHint: "All traffic goes direct, no proxy.",
+  proxyVia: "via {host}:{port}",
+  proxyNotConfigured:
+    "No proxy configured yet — set the proxy host and port in Settings first.",
+  goSettings: "Go to Settings",
   backToList: "Back to providers",
   // Sessions pool page
   sessionsTitle: "Session pool",
@@ -148,6 +159,8 @@ const EN = {
   sessionsEmptyHint: "Launch a provider once — its conversations will show up here.",
   sessionRefresh: "Refresh",
   sessionResume: "Resume",
+  sessionProxyTip: "Connection mode for resuming this session",
+  sessionProxyNeedConfig: "No proxy configured — set one in Settings first",
   sessionAttach: "Attach background session",
   sessionAttached: "Opened a terminal to attach to the existing background session.",
   sessionStarting: "Starting",
@@ -414,6 +427,15 @@ const ZH: Record<TKey, string> = {
     "{cli} CLI 不可用或安装损坏。请检查磁盘空间，安装或修复后点击「重新检测」：",
   launchStartedCodex: "已在新终端窗口中启动 Codex。",
   launchStartedClaude: "已在新终端窗口中启动 Claude。",
+  // 连接方式（启动弹窗 + 会话池）
+  fConnMode: "连接方式",
+  connModeTip: "连接方式：直连，或走「设置」中配置的代理",
+  connDirect: "直连",
+  connProxy: "代理",
+  connDirectHint: "全部流量直连，不走代理。",
+  proxyVia: "经 {host}:{port} 代理",
+  proxyNotConfigured: "尚未配置代理——请先在「设置」页填写代理地址与端口。",
+  goSettings: "去配置",
   backToList: "返回供应商列表",
   // Sessions pool page
   sessionsTitle: "会话池",
@@ -421,6 +443,8 @@ const ZH: Record<TKey, string> = {
   sessionsEmptyHint: "先启动一次供应商，其对话记录会出现在这里。",
   sessionRefresh: "刷新",
   sessionResume: "恢复",
+  sessionProxyTip: "恢复该会话时的连接方式",
+  sessionProxyNeedConfig: "尚未配置代理——请先在「设置」页配置",
   sessionAttach: "连接后台会话",
   sessionAttached: "已打开终端，连接原后台会话。",
   sessionStarting: "正在启动",

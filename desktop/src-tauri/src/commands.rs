@@ -12,8 +12,11 @@
 //!      claude always uses the vendor's x-api-key header)
 //! - fetch_models({ base_url, api_key, engine, auth_mode, provider_type })
 //!     -> { ok, message, models: [id, ...] }
-//! - launch_profile(id, workspace) -> { runtime_id, script_path, warning }
-//!     (codex: the profile's model list is auto-synced from the server
+//! - launch_profile(id, workspace, useProxy?) -> { runtime_id, script_path,
+//!     warning }
+//!     (use_proxy: None = follow the global proxy setting, Some(true) =
+//!      require a configured proxy, Some(false) = direct connection;
+//!      codex: the profile's model list is auto-synced from the server
 //!      first — strict replace; a sync failure / terminal fallback is
 //!      surfaced via `warning`)
 //! - login_profile(id) -> { runtime_id, script_path, warning }
@@ -22,8 +25,10 @@
 //!     (session_id, engine, profile_id, profile_name, provider_type,
 //!      cwd, preview, modified [unix secs], resumable, pinned, title,
 //!      open)
-//! - resume_session(session_id) -> { runtime_id, script_path, warning }
-//!     (errors when the session is still open in a running terminal)
+//! - resume_session(session_id, useProxy?) -> { runtime_id, script_path,
+//!     warning }
+//!     (errors when the session is still open in a running terminal;
+//!      use_proxy overrides the global proxy setting for this launch)
 //! - get_status(force?) -> { codex_found, codex_version, claude_found,
 //!     claude_version, config_dir, profiles_count, version }
 //!     (the expensive CLI version probes are cached ~30 s per process;
@@ -514,11 +519,43 @@ pub async fn fetch_models(m: ModelsInput) -> Result<ModelsOut, String> {
     })
 }
 
+/// The global launch settings with the caller's per-launch proxy choice
+/// applied on top:
+/// - `None` — follow the global setting (legacy behavior: proxy env only
+///   when one is configured);
+/// - `Some(true)` — require the configured proxy (an error otherwise, so a
+///   "use proxy" launch never silently goes direct);
+/// - `Some(false)` — direct connection: force the proxy off for this launch
+///   only, the stored settings are not modified.
+fn settings_for_launch(settings: Settings, use_proxy: Option<bool>) -> Result<Settings, String> {
+    match use_proxy {
+        None => Ok(settings),
+        Some(true) => {
+            if settings.proxy_url().is_none() {
+                return Err(
+                    "proxy not configured — set the proxy host and port in settings first"
+                        .into(),
+                );
+            }
+            Ok(settings)
+        }
+        Some(false) => Ok(Settings {
+            proxy_host: String::new(),
+            proxy_port: 0,
+            ..settings
+        }),
+    }
+}
+
 /// Prepare an isolated runtime + start script, then open it in the user's
 /// system terminal. A terminal-open failure does not fail the command:
 /// the payload is still returned with `warning` set.
 #[tauri::command]
-pub async fn launch_profile(id: String, workspace: Option<String>) -> Result<LaunchOut, String> {
+pub async fn launch_profile(
+    id: String,
+    workspace: Option<String>,
+    use_proxy: Option<bool>,
+) -> Result<LaunchOut, String> {
     let store = ProfileStore::new();
     let profile = store.get(&id).map_err(|e| e.to_string())?;
     let workspace: PathBuf = match workspace {
@@ -540,8 +577,9 @@ pub async fn launch_profile(id: String, workspace: Option<String>) -> Result<Lau
         });
     }
     // Global launch settings (dangerous-mode flag, proxy env, pinned
-    // terminal) apply to every launch.
-    let settings = Settings::load();
+    // terminal) apply to every launch; the caller's per-launch proxy choice
+    // overrides the global proxy setting.
+    let settings = settings_for_launch(Settings::load(), use_proxy)?;
     let launch =
         launcher::prepare_terminal_launch(&store, &profile, &settings, &workspace, &[], "start")
             .map_err(|e| e.to_string())?;
@@ -735,13 +773,16 @@ pub async fn clear_unpinned_sessions() -> Result<usize, String> {
 
 /// Resume a session from the pool: same isolated-runtime launch flow as
 /// `launch_profile`, but in the session's original workspace (when it
-/// still exists) and with the engine's resume args appended.
+/// still exists) and with the engine's resume args appended. `use_proxy`
+/// overrides the global proxy setting for this launch only (see
+/// `settings_for_launch`).
 #[tauri::command]
-pub async fn resume_session(session_id: String) -> Result<LaunchOut, String> {
+pub async fn resume_session(session_id: String, use_proxy: Option<bool>) -> Result<LaunchOut, String> {
     let store = ProfileStore::new();
     let session = agent_switch_core::sessions::find_session(&store, &session_id)
         .map_err(|e| e.to_string())?;
-    let (launch, outcome) = launcher::resume_in_terminal(&store, &session, &Settings::load())
+    let settings = settings_for_launch(Settings::load(), use_proxy)?;
+    let (launch, outcome) = launcher::resume_in_terminal(&store, &session, &settings)
         .map_err(|e| e.to_string())?;
     Ok(LaunchOut {
         runtime_id: launch.runtime_id,

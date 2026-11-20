@@ -311,8 +311,14 @@ export const api = {
     auth_mode: string | null;
     provider_type: string;
   }): Promise<ModelListResult> => invoke("fetch_models", { m }),
-  launchProfile: (id: string, workspace: string | null): Promise<LaunchResult> =>
-    invoke("launch_profile", { id, workspace }),
+  // useProxy: false = direct connection (no proxy env at all), true = the
+  // proxy configured in settings (the backend errors when it is unset).
+  launchProfile: (
+    id: string,
+    workspace: string | null,
+    useProxy = false,
+  ): Promise<LaunchResult> =>
+    invoke("launch_profile", { id, workspace, useProxy }),
   // Official-account login: opens a terminal in the profile's isolated
   // home running `codex login` / `claude` (login screen).
   loginProfile: (id: string): Promise<LaunchResult> =>
@@ -323,8 +329,9 @@ export const api = {
     invoke("get_server_cache", { profileId: profile_id }),
   exportUsageCsv: (path: string): Promise<CsvExport> =>
     invoke("export_usage_csv", { path }),
-  resumeSession: (session_id: string): Promise<LaunchResult> =>
-    invoke("resume_session", { sessionId: session_id }),
+  // useProxy: per-resume proxy override (see launchProfile).
+  resumeSession: (session_id: string, useProxy = false): Promise<LaunchResult> =>
+    invoke("resume_session", { sessionId: session_id, useProxy }),
   setSessionPinned: (session_id: string, pinned: boolean): Promise<void> =>
     invoke("set_session_pinned", { sessionId: session_id, pinned }),
   setSessionTitle: (session_id: string, title: string): Promise<void> =>

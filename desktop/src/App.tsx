@@ -321,6 +321,10 @@ function AppInner() {
               : status?.codex_found ?? false
           }
           onRecheck={() => void recheckStatus()}
+          onGoSettings={() => {
+            setLaunchingProfile(null);
+            setView({ name: "settings" });
+          }}
           onClose={() => setLaunchingProfile(null)}
           onLaunched={(r) => {
             const started =

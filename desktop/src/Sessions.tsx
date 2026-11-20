@@ -6,7 +6,13 @@
 // The pool is search-by-title, pinned-first, and paginated client-side.
 
 import { useCallback, useEffect, useState } from "react";
-import { api, errorMessage, type Session, type Status } from "./api";
+import {
+  api,
+  errorMessage,
+  type Session,
+  type SettingsData,
+  type Status,
+} from "./api";
 import { useI18n, type TKey } from "./i18n";
 
 /** Rows per page of the pool. */
@@ -73,6 +79,24 @@ export default function SessionsPage({ status }: SessionsPageProps) {
   const [clearMsg, setClearMsg] = useState<{ ok: boolean; text: string } | null>(
     null,
   );
+  // Per-row proxy mode for the NEXT resume (absent = direct connection).
+  const [proxyMode, setProxyMode] = useState<Record<string, boolean>>({});
+  // Global proxy setting (drives whether the "proxy" mode is selectable).
+  const [proxySettings, setProxySettings] = useState<SettingsData | null>(
+    null,
+  );
+
+  useEffect(() => {
+    api
+      .getSettings()
+      .then(setProxySettings)
+      .catch(() => setProxySettings(null));
+  }, []);
+
+  const proxyConfigured =
+    !!proxySettings &&
+    proxySettings.proxy_host.trim() !== "" &&
+    proxySettings.proxy_port > 0;
 
   const load = useCallback(async () => {
     try {
@@ -121,7 +145,12 @@ export default function SessionsPage({ status }: SessionsPageProps) {
     setBusy(s.session_id);
     setResult(null);
     try {
-      const launch = await api.resumeSession(s.session_id);
+      // The row's proxy mode overrides the global proxy setting for this
+      // resume; absent (default) = direct connection.
+      const launch = await api.resumeSession(
+        s.session_id,
+        proxyMode[s.session_id] === true,
+      );
       setResult({
         sessionId: s.session_id,
         ok: !launch.warning,
@@ -387,33 +416,64 @@ export default function SessionsPage({ status }: SessionsPageProps) {
                 </button>
               </div>
               {s.resumable ? (
-                <button
-                  type="button"
-                  className="btn primary small"
-                  disabled={
-                    busy === s.session_id || (s.open && s.activity !== "background") || cliMissing(s.engine)
-                  }
-                  title={
-                    cliMissing(s.engine)
-                      ? t("launchCliMissing", {
-                          cli: s.engine === "claude" ? "Claude" : "Codex",
-                        })
-                      : undefined
-                  }
-                  onClick={() => void resume(s)}
-                >
-                  {busy === s.session_id
-                    ? t("resuming")
-                    : s.activity === "background"
-                      ? t("sessionAttach")
-                      : s.activity === "starting"
-                        ? t("sessionStarting")
-                        : s.activity === "unknown"
-                          ? t("sessionUnknown")
-                          : s.open
-                            ? t("sessionOpen")
-                            : t("sessionResume")}
-                </button>
+                <div className="session-launch-row">
+                  <div
+                    className="proxy-seg"
+                    role="group"
+                    title={t("sessionProxyTip")}
+                  >
+                    <button
+                      type="button"
+                      className={proxyMode[s.session_id] === true ? "" : "on"}
+                      disabled={busy === s.session_id}
+                      onClick={() =>
+                        setProxyMode((m) => ({ ...m, [s.session_id]: false }))
+                      }
+                    >
+                      {t("connDirect")}
+                    </button>
+                    <button
+                      type="button"
+                      className={proxyMode[s.session_id] === true ? "on" : ""}
+                      disabled={busy === s.session_id || !proxyConfigured}
+                      title={
+                        !proxyConfigured ? t("sessionProxyNeedConfig") : undefined
+                      }
+                      onClick={() =>
+                        setProxyMode((m) => ({ ...m, [s.session_id]: true }))
+                      }
+                    >
+                      {t("connProxy")}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn primary small"
+                    disabled={
+                      busy === s.session_id || (s.open && s.activity !== "background") || cliMissing(s.engine)
+                    }
+                    title={
+                      cliMissing(s.engine)
+                        ? t("launchCliMissing", {
+                            cli: s.engine === "claude" ? "Claude" : "Codex",
+                          })
+                        : undefined
+                    }
+                    onClick={() => void resume(s)}
+                  >
+                    {busy === s.session_id
+                      ? t("resuming")
+                      : s.activity === "background"
+                        ? t("sessionAttach")
+                        : s.activity === "starting"
+                          ? t("sessionStarting")
+                          : s.activity === "unknown"
+                            ? t("sessionUnknown")
+                            : s.open
+                              ? t("sessionOpen")
+                              : t("sessionResume")}
+                  </button>
+                </div>
               ) : (
                 <span className="muted">{t("sessionNoProfile")}</span>
               )}

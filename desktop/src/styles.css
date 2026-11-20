@@ -2908,3 +2908,109 @@ a:focus-visible,
     width: auto;
   }
 }
+
+/* ---------- Launch modal — use-proxy choice ---------- */
+
+/* The proxy-mode status line inside the launch modal. The doubled
+   specificity is required: the line is a direct <span> child of .field,
+   where `.field > span` applies the field-label styling (12.5px/600). */
+.field .proxy-mode-hint,
+.proxy-mode-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* Amber notice when "use proxy" is on but no proxy is configured yet —
+   same visual family as the other in-modal notice boxes. */
+.proxy-warn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  font-size: 13px;
+}
+
+/* ---------- Session pool — per-row proxy mode ---------- */
+
+/* The launch row: proxy-mode segment + resume button, right-aligned. */
+.session-launch-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Two-state segment: direct connection vs proxy. The active state reuses
+   the topbar pill family (accent on accent-soft) so it reads as the same
+   design language as the nav switcher. */
+.proxy-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.proxy-seg button {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 10px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.proxy-seg button + button {
+  border-left: 1px solid var(--border);
+}
+
+.proxy-seg button:hover:not(:disabled):not(.on) {
+  color: var(--text);
+  background: var(--bg);
+}
+
+.proxy-seg button.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-weight: 600;
+}
+
+.proxy-seg button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Inside the launch modal the segment stretches to the field width and
+   splits 50/50 — a proper two-way segmented control, not two buttons
+   crammed into a wide track. The compact pool rows keep auto width. */
+.field .proxy-seg {
+  display: flex;
+  width: 100%;
+  padding: 2px;
+  background: var(--bg);
+}
+
+.field .proxy-seg button {
+  flex: 1 1 0;
+  padding: 7px 0;
+  font-size: 13px;
+}
+
+.field .proxy-seg button.on {
+  background: var(--panel);
+  border-radius: 5px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.field .proxy-seg button + button {
+  border-left: none;
+}
