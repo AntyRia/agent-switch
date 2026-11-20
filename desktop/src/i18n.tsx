@@ -282,6 +282,8 @@ const EN = {
   updateCheck: "Check for updates",
   updateChecking: "Checking…",
   updateLatest: "You are on the latest version (v{v}).",
+  updateLatestCached:
+    "Latest version is v{v} (cached result — the network check failed, so this may be outdated).",
   updateUnreachable: "Could not reach the update server — try again later.",
   updateCheckFail: "Update check failed: {err}",
   updateModalTitle: "New version available",
@@ -565,6 +567,8 @@ const ZH: Record<TKey, string> = {
   updateCheck: "检查更新",
   updateChecking: "检查中…",
   updateLatest: "当前已是最新版本（v{v}）。",
+  updateLatestCached:
+    "最新版本为 v{v}（缓存结果——本次网络检查失败，信息可能不是最新的）。",
   updateUnreachable: "无法连接更新服务，请稍后再试。",
   updateCheckFail: "检查更新失败：{err}",
   updateModalTitle: "发现新版本",

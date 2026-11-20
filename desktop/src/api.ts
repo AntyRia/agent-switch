@@ -264,6 +264,9 @@ export interface UpdateInfo {
   /** The package this machine would download; null = no build for this
    *  platform in the release. */
   asset_name: string | null;
+  /** True when the answer came from the local cache (stale after a
+   *  failed network fetch) — the UI labels it accordingly. */
+  cached: boolean;
 }
 
 /** Payload of the "update-progress" event (bytes). */

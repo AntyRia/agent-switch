@@ -1112,6 +1112,10 @@ pub struct UpdateInfo {
     /// The package this machine would download; null when the release
     /// ships no build for this platform.
     pub asset_name: Option<String>,
+    /// True when the answer came from the local cache (possibly stale
+    /// after a failed network fetch) — the UI says so instead of
+    /// presenting a cached version as a fresh check result.
+    pub cached: bool,
 }
 
 /// Check the official releases for a newer version. `force=true` bypasses
@@ -1122,7 +1126,7 @@ pub struct UpdateInfo {
 pub fn check_for_update(force: Option<bool>) -> Result<UpdateInfo, String> {
     let force = force.unwrap_or(false);
     match agent_switch_core::update::check(force, std::time::Duration::from_secs(10)) {
-        agent_switch_core::update::CheckOutcome::Known { release, .. } => {
+        agent_switch_core::update::CheckOutcome::Known { release, cached } => {
             let has_update = agent_switch_core::update::is_newer(&release.tag_name);
             let release_url = release.html_url.clone();
             Ok(UpdateInfo {
@@ -1135,6 +1139,7 @@ pub fn check_for_update(force: Option<bool>) -> Result<UpdateInfo, String> {
                     agent_switch_core::update::PackageKind::Gui,
                 )
                 .map(|a| a.name),
+                cached,
             })
         }
         agent_switch_core::update::CheckOutcome::Unavailable => Ok(UpdateInfo {
@@ -1143,6 +1148,7 @@ pub fn check_for_update(force: Option<bool>) -> Result<UpdateInfo, String> {
             has_update: false,
             release_url: None,
             asset_name: None,
+            cached: true,
         }),
     }
 }

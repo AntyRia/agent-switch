@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.18] - 2026-11-20
+
+### Fixed
+
+- **The About page's "check for updates" could present a cached version
+  as a fresh result**: when a forced check failed to reach the API it
+  silently fell back to the last successful check — potentially days old
+  — and the UI toasted "you are on the latest version (vX)" as if it had
+  just verified it. Check results now carry a `cached` flag, and a
+  forced check served from the cache says so explicitly (with the
+  cached version) instead of claiming the app is up to date.
+
 ## [0.4.17] - 2026-11-20
 
 ### Added

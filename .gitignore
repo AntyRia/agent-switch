@@ -15,3 +15,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.swp
+
+# Local planning notes (not part of the release)
+docs/

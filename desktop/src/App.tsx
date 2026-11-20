@@ -159,7 +159,13 @@ function AppInner() {
       if (i.has_update && i.latest) {
         setUpdateInfo(i);
       } else if (i.latest) {
-        showToast(t("updateLatest", { v: i.latest }));
+        // A forced check that fell back to the cache must not be
+        // presented as a fresh "you are current" verdict.
+        showToast(
+          i.cached
+            ? t("updateLatestCached", { v: i.latest })
+            : t("updateLatest", { v: i.latest }),
+        );
       } else {
         showToast(t("updateUnreachable"));
       }
