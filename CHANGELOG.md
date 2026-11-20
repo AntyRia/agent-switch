@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.19] - 2026-11-20
+
+### Fixed
+
+- **The macOS built-in update always failed with "running outside a
+  packaged .app (dev build)"**: the bundle detection walked up only two
+  path levels from the running binary (`<bundle>/Contents/MacOS/<bin>` →
+  `Contents`) instead of three (→ `<bundle>.app`), so the `.app`
+  extension check failed for every installed build and the updater never
+  started. The walk-up now reaches the bundle, and the logic lives in a
+  pure helper with a unit test covering installed, DMG-mounted and dev
+  build paths.
+
 ## [0.4.18] - 2026-11-20
 
 ### Fixed

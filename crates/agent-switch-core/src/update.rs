@@ -401,18 +401,24 @@ pub fn remove_stale_old(current: &Path) {
     let _ = fs::remove_file(with_suffix(current, "old"));
 }
 
+/// The .app bundle for an executable path (None outside a packaged
+/// bundle, e.g. a dev build).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_bundle_from(exe: &Path) -> Option<PathBuf> {
+    // exe = <bundle>/Contents/MacOS/<binary> — three levels up reach the
+    // .app; two only reach Contents.
+    let bundle = exe.parent()?.parent()?.parent()?;
+    matches!(bundle.extension().and_then(|e| e.to_str()), Some("app"))
+        .then(|| bundle.to_path_buf())
+}
+
 /// The .app bundle of the running GUI (None outside a packaged bundle,
 /// e.g. a dev build).
 #[cfg(target_os = "macos")]
 pub fn macos_bundle() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    // current_exe = <bundle>/Contents/MacOS/<binary>
-    let bundle = exe.parent()?.parent()?;
-    matches!(
-        bundle.extension().and_then(|e| e.to_str()),
-        Some("app")
-    )
-    .then(|| bundle.to_path_buf())
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| macos_bundle_from(&exe))
 }
 
 /// Write the detached macOS self-update script and spawn it (fire and
@@ -598,6 +604,29 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn macos_bundle_from_reaches_the_app_three_levels_up() {
+        // <bundle>/Contents/MacOS/<binary> — two levels up only reach
+        // Contents, and the update flow rejected every packaged build.
+        let exe = Path::new("/Applications/Agent Switch.app/Contents/MacOS/agent_switch_desktop");
+        assert_eq!(
+            macos_bundle_from(exe).as_deref(),
+            Some(Path::new("/Applications/Agent Switch.app"))
+        );
+        // Same layout from a mounted DMG volume.
+        let exe = Path::new("/Volumes/Agent Switch 0.2.3/Agent Switch.app/Contents/MacOS/agent_switch_desktop");
+        assert_eq!(
+            macos_bundle_from(exe).as_deref(),
+            Some(Path::new("/Volumes/Agent Switch 0.2.3/Agent Switch.app"))
+        );
+        // Not inside a .app (dev build / bare binary).
+        assert_eq!(macos_bundle_from(Path::new("/tmp/agent_switch_desktop")).as_deref(), None);
+        assert_eq!(
+            macos_bundle_from(Path::new("/tmp/Contents/MacOS/agent_switch_desktop")).as_deref(),
+            None
+        );
     }
 
     const MACOS_V023: &[&str] = &[
